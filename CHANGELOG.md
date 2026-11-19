@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-19
+
+- New checks: Markdown links on the staged snapshot, decision-record format, Vale house style, CHANGELOG and version agreement, code changes under a released tag, annotated release tags, and Conventional Commits subjects.
+- New commands: `scan-archive` (tarballs and zips before publishing, plus source maps and secret file names) and `history` (every commit, message, author and tag, for a repository about to go public).
+- The CI workflow template installs Vale when the repository has a `.vale.ini`.
+
 ## [0.1.1] - 2026-11-19
 
 - The private-names rule now applies only to public and going-public repositories, as documented.

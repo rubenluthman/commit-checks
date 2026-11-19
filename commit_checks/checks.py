@@ -11,7 +11,7 @@ import re
 import subprocess
 from typing import Callable, Dict, List, Optional
 
-from . import engine, gitutil, names, rules
+from . import archive, docs, engine, gitutil, history, names, release, rules, vale
 from .errors import CheckError, Finding
 from .settings import Settings
 
@@ -37,6 +37,7 @@ class Context:
         self.revspec = revspec
         self.commits = commits or []
         self._text: Optional[List[Finding]] = None
+        self.archives: List[str] = []
 
     def private_names(self) -> List[str]:
         """The private-names rule applies only to public and going-public repositories."""
@@ -257,15 +258,27 @@ CHECKS: Dict[str, Callable[[Context], List[Finding]]] = {
     "author-emails": check_author_emails,
     "loader-current": check_loader_current,
     "visibility": check_visibility,
+    "links": lambda ctx: docs.check_links(ctx),
+    "adr-format": lambda ctx: docs.check_adr_format(ctx),
+    "versions": lambda ctx: release.check_versions(ctx),
+    "release-tags": lambda ctx: release.check_release_tags(ctx),
+    "conventional-commits": lambda ctx: release.check_conventional_commits(ctx),
+    "vale": lambda ctx: vale.check_vale(ctx),
+    "archive": lambda ctx: [f for p in ctx.archives for f in archive.scan_archive(p, ctx.settings)],
+    "history": lambda ctx: history.scan_history(ctx),
 }
 
 TEXT = ["secrets", "home-paths", "emails", "private-names"]
 MODES: Dict[str, List[str]] = {
-    "pre-commit": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "author-emails"],
-    "commit-msg": TEXT,
-    "pre-push": TEXT + ["author-emails"],
-    "verify": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "hooks-installed", "loader-current"],
-    "ci": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "loader-current", "visibility"],
+    "scan-archive": ["archive"],
+    "history": ["history"],
+    "pre-commit": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "author-emails", "links", "adr-format", "versions"],
+    "commit-msg": TEXT + ["conventional-commits"],
+    "pre-push": TEXT + ["author-emails", "conventional-commits"],
+    "verify": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "hooks-installed", "loader-current", "links",
+                      "adr-format", "versions", "release-tags", "vale"],
+    "ci": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "loader-current", "visibility", "links",
+                  "adr-format", "versions", "release-tags", "vale"],
 }
 
 

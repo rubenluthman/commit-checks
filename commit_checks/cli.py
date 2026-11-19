@@ -15,6 +15,8 @@ USAGE = """usage: commit-checks MODE
   pre-push              scan every commit about to be pushed (the pre-push hook; reads refs on stdin)
   verify                scan an exact copy of the staged snapshot, and check the repository set-up
   ci                    verify, for CI; scans COMMIT_CHECKS_RANGE too when set
+  scan-archive FILE...  scan a release archive (tar, tgz or zip) before it is published
+  history               scan the whole history (every commit, message, author and tag), as for a repository about to go public
 """
 ZERO = "0" * 40
 
@@ -55,7 +57,15 @@ def _run(argv: List[str]) -> int:
     root = gitutil.toplevel(os.getcwd())
     conf = settings.load(root)
     findings: List[Finding] = []
-    if mode == "pre-commit":
+    if mode == "scan-archive":
+        if len(argv) < 2:
+            raise CheckError("scan-archive needs at least one file")
+        ctx = checks.Context(root, conf, "archive")
+        ctx.archives = argv[1:]
+        findings = checks.run_mode(mode, ctx)
+    elif mode == "history":
+        findings = checks.run_mode(mode, checks.Context(root, conf, "history"))
+    elif mode == "pre-commit":
         findings = checks.run_mode(mode, checks.Context(root, conf, "staged"))
     elif mode == "commit-msg":
         if len(argv) != 2 or not os.path.isfile(argv[1]):
