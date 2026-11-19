@@ -1,0 +1,4 @@
+#!/bin/sh
+# commit-checks, run from source.
+root=$(git rev-parse --show-toplevel) || exit 1
+PYTHONPATH="$root" python3 -B -m commit_checks commit-msg "$1" || exit 1

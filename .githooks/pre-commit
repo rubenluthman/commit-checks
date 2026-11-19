@@ -1,0 +1,4 @@
+#!/bin/sh
+# Runs this repository's own commit-checks (from source, not through the loader).
+root=$(git rev-parse --show-toplevel) || exit 1
+PYTHONPATH="$root" python3 -B -m commit_checks pre-commit || exit 1

@@ -1,0 +1,12 @@
+.DS_Store
+__pycache__/
+*.pyc
+.env
+.env.*
+.dev.vars*
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+id_*
