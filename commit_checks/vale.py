@@ -28,14 +28,16 @@ def check_vale(ctx) -> List[Finding]:
     globs = conf.get("globs", ["*.md"])
     exclude = conf.get("exclude", [])
     tracked = gitutil.index_paths(ctx.root)
+    with open(ini, encoding="utf-8") as fh:
+        pin = next((l.strip() for l in fh if l.startswith("Packages")), "")
+    if not pin:
+        return []  # no shared style package to pin; the repository checks its own styles itself
     exe = shutil.which("vale")
     if not exe:
         if "CONTRIBUTING.md" in tracked and not os.environ.get("CI"):
             sys.stderr.write("NOTICE: vale is not installed: skipping the house style check, which CI runs (brew install vale)\n")
             return []
         raise CheckError("vale is not installed (brew install vale)")
-    with open(ini, encoding="utf-8") as fh:
-        pin = next((l.strip() for l in fh if l.startswith("Packages")), "")
     styles = os.path.join(ctx.root, ".vale", "styles", "HouseStyle")
     pin_file = os.path.join(styles, ".pin")
     have = ""

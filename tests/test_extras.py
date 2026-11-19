@@ -39,6 +39,13 @@ class ValeTests(Base):
         r.stage("a.md", "foo" + "bar\n")
         self.assertPasses(r.run("verify"))
 
+    def test_an_ini_without_a_shared_package_is_skipped(self):
+        r = vale_repo(self)
+        r.write(".vale.ini", "StylesPath = .\n\n[*.md]\nBasedOnStyles = HouseStyle\n")
+        r.git("add", ".vale.ini")
+        r.stage("a.md", "foo" + "bar\n")
+        self.assertPasses(r.run("verify"))
+
     def test_globs_and_excludes(self):
         r = vale_repo(self)
         r.stage("a.txt", "foo" + "bar\n")

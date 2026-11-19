@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-19
+
+- The Vale check skips a `.vale.ini` that names no shared style package.
+
 ## [0.2.0] - 2026-11-19
 
 - New checks: Markdown links on the staged snapshot, decision-record format, Vale house style, CHANGELOG and version agreement, code changes under a released tag, annotated release tags, and Conventional Commits subjects.
