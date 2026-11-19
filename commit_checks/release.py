@@ -95,12 +95,25 @@ def check_versions(ctx) -> List[Finding]:
     return [f for f in out if not ctx.allowed(f)]
 
 
+def _version_tuple(text: str):
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", text or "")
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
 def check_release_tags(ctx) -> List[Finding]:
     """Release tags (vX.Y.Z or X.Y.Z) are annotated."""
     proc = gitutil.run(["for-each-ref", "--format=%(refname:short)%09%(objecttype)", "refs/tags"], ctx.root)
     out = []
+    since = ctx.settings.data.get("annotated_tags_from")
+    floor = _version_tuple(since) if since else None
+    if since and floor is None:
+        raise CheckError("annotated_tags_from must look like 1.2.3")
     for row in proc.stdout.decode("utf-8", "replace").splitlines():
         name, _sep, kind = row.partition("\t")
+        if floor is not None:
+            ver = _version_tuple(name)
+            if ver is not None and ver < floor:
+                continue
         if re.match(r"^v?\d+\.\d+\.\d+", name) and kind != "tag":
             out.append(Finding("release-tags", name, 0, "release tag is not annotated", "release-tags"))
     return [f for f in out if not ctx.allowed(f)]

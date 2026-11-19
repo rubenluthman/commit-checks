@@ -141,6 +141,17 @@ class ReleaseTagTests(Base):
         r.git("tag", "backup-before-rebase")
         self.assertPasses(r.run("verify"))
 
+    def test_annotated_tags_are_required_only_from_a_version_on(self):
+        r = self.repo(commit_first=True)
+        r.git("tag", "v0.1.4")
+        r.git("tag", "v0.1.9")
+        r.settings(annotated_tags_from="0.1.10")
+        self.assertPasses(r.run("verify"))
+        r.git("tag", "v0.1.10")
+        self.assertBlocks(r.run("verify"), "FAIL release-tags: v0.1.10")
+        r.settings(annotated_tags_from="nonsense")
+        self.assertErrors(r.run("verify"), "annotated_tags_from")
+
     def test_an_old_lightweight_tag_can_be_allowed(self):
         r = self.repo(commit_first=True)
         r.git("tag", "v0.1.0")

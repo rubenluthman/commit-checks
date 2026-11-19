@@ -9,7 +9,7 @@ from .errors import CheckError
 
 SETTINGS_FILE = ".commit-checks.json"
 VISIBILITIES = ("private", "public", "going-public")
-KNOWN_KEYS = {"version", "commit", "source", "visibility", "email_allow", "allow", "self", "release", "links_exclude", "adr_exempt", "vale", "conventional_commits", "subject_max"}
+KNOWN_KEYS = {"version", "commit", "source", "visibility", "email_allow", "allow", "self", "release", "links_exclude", "adr_exempt", "vale", "conventional_commits", "subject_max", "annotated_tags_from"}
 
 
 class Settings:

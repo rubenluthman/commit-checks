@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-19
+
+- New setting `annotated_tags_from`: release tags below that version may stay lightweight.
+
 ## [0.2.3] - 2026-11-19
 
 - Two more key shapes: Cloudflare tokens (`cfut_`, `cfat_`, `cfk_`) and Resend keys (`re_`).
