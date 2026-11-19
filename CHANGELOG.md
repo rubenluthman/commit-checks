@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-19
+
+- New setting `subject_max` limits the commit subject length.
+
 ## [0.2.1] - 2026-11-19
 
 - The Vale check skips a `.vale.ini` that names no shared style package.

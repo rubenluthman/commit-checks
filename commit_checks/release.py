@@ -108,8 +108,16 @@ def check_conventional_commits(ctx) -> List[Finding]:
             sha, _s, subject = row.partition("\t")
             subjects.append(("commit " + sha, subject))
     out = []
+    limit = ctx.settings.data.get("subject_max")
     for label, subject in subjects:
-        if EXEMPT_SUBJECT.match(subject) or CONVENTIONAL.match(subject):
+        if EXEMPT_SUBJECT.match(subject):
+            continue
+        if isinstance(limit, int) and len(subject) > limit:
+            f = Finding("conventional-commits", label, 0, "subject is longer than %d characters" % limit, "conventional-commits")
+            if not ctx.allowed(f):
+                out.append(f)
+            continue
+        if CONVENTIONAL.match(subject):
             continue
         f = Finding("conventional-commits", label, 0, "subject must look like type(scope): summary (types: %s)" % TYPES.replace("|", ", "), "conventional-commits")
         if not ctx.allowed(f):

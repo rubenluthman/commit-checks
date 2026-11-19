@@ -156,6 +156,14 @@ class CommitMessageTests(Base):
             with self.subTest(subject=s):
                 self.assertBlocks(self.msg(r, s + "\n"), "FAIL conventional-commits")
 
+    def test_a_subject_longer_than_the_repository_limit_fails(self):
+        r = self.repo()
+        long = "feat: " + "x" * 70
+        self.assertPasses(self.msg(r, long + "\n"))
+        r.settings(subject_max=72)
+        self.assertBlocks(self.msg(r, long + "\n"), "longer than 72")
+        self.assertPasses(self.msg(r, "feat: short\n"))
+
     def test_comment_lines_are_ignored(self):
         r = self.repo()
         self.assertPasses(self.msg(r, "# Please enter\nfix: real subject\n"))
