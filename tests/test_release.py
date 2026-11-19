@@ -106,6 +106,18 @@ class VersionTests(Base):
         r.commit("fix: change")
         self.assertBlocks(r.run("verify"), "code changed under the released tag")
 
+    def test_a_changed_version_must_not_reuse_a_tag(self):
+        r = self.proj({"type": "package-json", "path": "package.json"}, top="1.2.2")
+        r.stage("package.json", json.dumps({"version": "1.2.2"}))
+        r.commit("chore: start")
+        r.git("tag", "-a", "v1.2.3", "-m", "already released elsewhere")
+        r.stage("package.json", json.dumps({"version": "1.2.3"}))
+        r.stage("CHANGELOG.md", changelog("1.2.3"))
+        self.assertBlocks(r.run("pre-commit"), "already released as tag v1.2.3")
+        r.stage("package.json", json.dumps({"version": "1.2.4"}))
+        r.stage("CHANGELOG.md", changelog("1.2.4"))
+        self.assertPasses(r.run("pre-commit"))
+
     def test_bumping_the_version_clears_it(self):
         r = self._released()
         r.stage("Main.swift", "print(1)\n")

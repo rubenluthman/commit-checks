@@ -5,6 +5,7 @@
 ## [0.2.3] - 2026-11-19
 
 - Two more key shapes: Cloudflare tokens (`cfut_`, `cfat_`, `cfk_`) and Resend keys (`re_`).
+- The version check also fails when a commit changes the version to one that already has a release tag.
 
 ## [0.2.2] - 2026-11-19
 

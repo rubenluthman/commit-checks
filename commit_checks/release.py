@@ -21,14 +21,15 @@ CONVENTIONAL = re.compile(r"^(?:%s)(?:\([^()\s]+\))?!?: \S" % TYPES)
 EXEMPT_SUBJECT = re.compile(r'^(?:Merge |Revert "|fixup! |squash! )')
 
 
-def _versions(ctx, source) -> Set[str]:
+def _versions(ctx, source, text: Optional[str] = None) -> Set[str]:
     kind = source.get("type")
     path = source.get("path")
     if not path:
         raise CheckError("release.source needs a path")
     if path not in set(gitutil.index_paths(ctx.root)):
         raise CheckError("release.source file is not tracked: " + path)
-    text = read_index(ctx.root, path)
+    if text is None:
+        text = read_index(ctx.root, path)
     if kind == "package-json":
         try:
             return {str(json.loads(text)["version"])}
@@ -70,6 +71,17 @@ def check_versions(ctx) -> List[Finding]:
         out.append(Finding("versions", changelog, 0, "CHANGELOG is missing", "versions"))
     elif top != version:
         out.append(Finding("versions", changelog, 0, "top release heading does not match the version %s" % version, "versions"))
+    # A version that changed in this commit must not reuse an existing release tag.
+    head = gitutil.run(["show", "HEAD:" + conf["source"]["path"]], ctx.root, ok=(0, 128))
+    if head.returncode == 0:
+        try:
+            before = _versions(ctx, conf["source"], head.stdout.decode("utf-8", "replace"))
+        except CheckError:
+            before = set()
+        if before and before != versions:
+            for tag in ("v" + version, version):
+                if gitutil.run(["rev-parse", "-q", "--verify", "refs/tags/" + tag], ctx.root, ok=(0, 1)).returncode == 0:
+                    out.append(Finding("versions", conf["source"]["path"], 0, "version %s is already released as tag %s" % (version, tag), "versions"))
     for tag in ("v" + version, version):
         proc = gitutil.run(["rev-parse", "-q", "--verify", "refs/tags/%s^{commit}" % tag], ctx.root, ok=(0, 1))
         if proc.returncode != 0:
