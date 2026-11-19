@@ -32,6 +32,7 @@ BUILTIN_ALLOW: Dict[str, List[str]] = {
         r"@users\.noreply\.github\.com$",
         r"^noreply@",
         r"@example\.(?:com|org|net|test)$",
+        r"@[A-Za-z0-9.-]+\.(?:invalid|test|example|localhost)$",
         r"^git@(?:github|gitlab|bitbucket)\.(?:com|org)$",
         r"\.(?:png|jpe?g|gif|svg|webp|heic|pdf|css|js)$",
     ],

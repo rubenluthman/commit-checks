@@ -39,7 +39,10 @@ class Context:
         self._text: Optional[List[Finding]] = None
 
     def private_names(self) -> List[str]:
-        return names.load(required=self.settings.strict)
+        """The private-names rule applies only to public and going-public repositories."""
+        if not self.settings.strict:
+            return []
+        return names.load(required=True)
 
     def text_findings(self) -> List[Finding]:
         """Run the text scan once; the four text checks each take their share."""

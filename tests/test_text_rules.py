@@ -53,13 +53,13 @@ class EmailTests(Base):
         r = self.repo()
         r.stage("a.md", "\n".join([
             email("1+x", "users.noreply.github.com"), email("noreply", "anthropic.com"),
-            email("me", "example.com"), email("a", "example.test"), "git" + "@github.com:owner/repo.git", "icon" + "@2x.png", ""]))
+            email("me", "example.com"), email("a", "example.test"), "git" + "@github.com:owner/repo.git", "icon" + "@2x.png", email("t", "mail.invalid"), email("t", "host.test"), ""]))
         self.assertPasses(r.run("pre-commit"))
         self.assertPasses(r.run("verify"))
 
     def test_the_repository_can_allow_its_own_domain(self):
         r = self.repo()
-        r.stage("a.md", "mail %s\n" % email("hello", "books.test"))
+        r.stage("a.md", "mail %s\n" % email("hello", "bookclub.se"))
         self.assertBlocks(r.run("verify"))
         r.settings(allow=[{"rule": "emails", "path": "a.md", "reason": "the club's public address"}])
         self.assertPasses(r.run("verify"))
@@ -97,6 +97,12 @@ class PrivateNameTests(Base):
         with open(r.names_file, "w") as fh:
             fh.write("# only a comment\n\n")
         self.assertErrors(r.run("verify", use_names=True), "private-names list is missing")
+
+    def test_private_repository_ignores_the_list(self):
+        r = self.repo(visibility="private")
+        r.stage("a.md", "the zebra" + "foo project\n")
+        self.assertPasses(r.run("pre-commit", use_names=True))
+        self.assertPasses(r.run("verify", use_names=True))
 
     def test_private_repository_without_the_list_still_passes(self):
         r = self.repo(visibility="private")

@@ -35,7 +35,7 @@ Requirements: `git`, `gitleaks` 8.30.1, and Python 3.9 or newer (the one that sh
 
    ```json
    {
-     "version": "v0.1.0",
+     "version": "v0.1.1",
      "commit": "<the full 40-character commit ID of that tag>",
      "source": "https://github.com/OWNER/commit-checks.git",
      "visibility": "public",
