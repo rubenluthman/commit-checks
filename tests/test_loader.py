@@ -226,3 +226,50 @@ class VisibilityTests(Base):
         self.assertErrors(self.ci(r, self.serve(b"not json")), "cannot ask GitHub")
         self.assertErrors(self.ci(r, self.serve(b'{"private": "yes"}')), "unexpected")
         self.assertErrors(self.ci(r, self.serve(b"{}", code=500)), "cannot ask GitHub")
+
+
+class HookRootTests(LoaderBase):
+    """The loader runs inside real hooks, in a main checkout and in a linked worktree."""
+
+    def hooked(self, r):
+        self.adopt(r)
+        shutil.copytree(os.path.join(PKG, "templates", "githooks"), r.path(".githooks"))
+        for name in os.listdir(r.path(".githooks")):
+            os.chmod(os.path.join(r.path(".githooks"), name), 0o755)
+        r.git("config", "core.hooksPath", ".githooks")
+        r.git("add", ".githooks")
+        r.git("commit", "-q", "-m", "chore: start", env={"COMMIT_CHECKS_PATH": self.src, "CI": "1"})
+
+    def commit_in(self, path, rel):
+        with open(os.path.join(path, rel), "w") as fh:
+            fh.write("hello\n")
+        env = env_for(extra={"COMMIT_CHECKS_PATH": self.src, "CI": "1"})
+        run = lambda *a: subprocess.run(["git"] + list(a), cwd=path, capture_output=True, text=True, env=env)
+        run("add", rel)
+        return run("commit", "-q", "-m", "chore: add " + rel)
+
+    def test_a_commit_through_the_hooks_passes_in_a_main_checkout(self):
+        r = self.repo()
+        self.hooked(r)
+        proc = self.commit_in(r.root, "a.txt")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_a_commit_through_the_hooks_passes_in_a_linked_worktree(self):
+        r = self.repo()
+        self.hooked(r)
+        wt = os.path.join(tempfile.mkdtemp(prefix="cc-wt-"), "wt")
+        self.addCleanup(shutil.rmtree, os.path.dirname(wt), True)
+        r.git("worktree", "add", "-q", "-b", "side", wt)
+        proc = self.commit_in(wt, "b.txt")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("cannot read version", proc.stdout + proc.stderr)
+
+    def test_a_loader_outside_root_scripts_fails(self):
+        r = self.repo()
+        self.adopt(r)
+        os.makedirs(r.path("tools"))
+        shutil.copy(r.path("scripts/commit-checks"), r.path("tools/commit-checks"))
+        e = env_for(extra={"CI": "1", "COMMIT_CHECKS_PATH": self.src})
+        proc = subprocess.run([sys.executable, r.path("tools/commit-checks"), "verify"], cwd=r.root,
+                              capture_output=True, text=True, env=e)
+        self.assertErrors(proc, "must live at")

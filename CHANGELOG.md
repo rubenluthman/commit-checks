@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- The loader finds the repository root inside git hooks and linked worktrees, and fails when it is not at `scripts/commit-checks`.
+
 ## [0.2.5] - 2026-11-19
 
 - The decision-record check ignores Vale directive comments around a record's title.
