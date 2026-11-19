@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-11-19
+
 - The hooks check accepts the absolute `core.hooksPath` that the Claude desktop app sets in a worktree, when it points at that worktree's or the main checkout's `.githooks`.
 
 ## [0.2.6] - 2026-11-19
