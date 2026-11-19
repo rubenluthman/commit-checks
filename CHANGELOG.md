@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-19
+
+- Two more key shapes: Cloudflare tokens (`cfut_`, `cfat_`, `cfk_`) and Resend keys (`re_`).
+
 ## [0.2.2] - 2026-11-19
 
 - New setting `subject_max` limits the commit subject length.

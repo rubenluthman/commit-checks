@@ -17,6 +17,8 @@ SHAPE_RULES: List[Tuple[str, str, str]] = [
     ("cc-google-key", "Google API key", r"\bAIza[0-9A-Za-z_-]{35}"),
     ("cc-slack-token", "Slack token", r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),
     ("cc-npm-token", "npm token", r"\bnpm_[A-Za-z0-9]{36}"),
+    ("cc-cloudflare-token", "Cloudflare token", r"\bcf(?:ut|at|k)_[A-Za-z0-9]{40}"),
+    ("cc-resend-key", "Resend key", r"\bre_[A-Za-z0-9]{24,}"),
     ("cc-private-key", "private key header", r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----"),
 ]
 HOME_PATH = ("cc-home-path", "home-folder path", r"(?:/Use[r]s/|/hom[e]/)[^\s/'\"`<>()\[\]]+/|~/Develope[r]\b")

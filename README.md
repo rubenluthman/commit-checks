@@ -8,7 +8,7 @@ The point of the package is that a check never quietly passes. A missing tool, t
 
 | Check | Catches |
 |---|---|
-| secrets | API keys, tokens and private-key headers, in files and commit messages |
+| secrets | API keys, tokens and private-key headers (including OpenAI, Anthropic, GitHub, AWS, Stripe, Google, Slack, npm, Cloudflare and Resend shapes), in files and commit messages |
 | home paths | `/Users/name/`, `/home/name/` and the equivalent of a developer folder under a home directory |
 | emails | Addresses in content, except noreply, example and allowed ones |
 | private names | Names from a private list kept outside the repository (public repositories only) |
