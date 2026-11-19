@@ -62,7 +62,7 @@ def conflict_marker(c="<"):
 
 
 def env_for(extra=None, canary=False, names_file=None, path=None):
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "GITLEAKS", "COMMIT_CHECKS", "CI"))}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "GITLEAKS", "COMMIT_CHECKS", "CI", "GITHUB_", "RUNNER_"))}
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["PYTHONPATH"] = PKG + (os.pathsep + SHIM if canary else "")
