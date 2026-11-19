@@ -99,7 +99,8 @@ INDEX_PATH = ADR_DIR + "/README.md"
 ADR_FILE = re.compile(r"^(\d{4})-[a-z0-9-]+\.md$")
 HEADINGS = ["## Decision", "## Why", "## What we gave up", "## Revisit if"]
 STATUS_LINE = re.compile(r"^Status: (Active|Retired) · (\d{4}-\d{2}-\d{2})$")
-EM_DASH = "—"
+EM_DASH = chr(0x2014)
+VALE_DIRECTIVE = re.compile(r"^<!-- vale [^>]*-->\s*$")
 
 
 def check_adr_format(ctx) -> List[Finding]:
@@ -118,7 +119,9 @@ def check_adr_format(ctx) -> List[Finding]:
             errors.append("%s: file name must be NNNN-title.md" % label)
             continue
         adr_id = m.group(1)
-        text = read_index(ctx.root, label)
+        raw = read_index(ctx.root, label)
+        # Vale directive comments (to switch a rule off around a title) are not part of the record's text.
+        text = "\n".join(l for l in raw.split("\n") if not VALE_DIRECTIVE.match(l))
         lines = text.split("\n")
         if adr_id in seen:
             errors.append("%s: duplicate number %s" % (label, adr_id))

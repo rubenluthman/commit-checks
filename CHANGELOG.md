@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-11-19
+
+- The decision-record check ignores Vale directive comments around a record's title.
+
 ## [0.2.4] - 2026-11-19
 
 - New setting `annotated_tags_from`: release tags below that version may stay lightweight.

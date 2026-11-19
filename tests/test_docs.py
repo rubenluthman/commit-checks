@@ -164,7 +164,7 @@ class AdrTests(Base):
 
     def test_an_em_dash_fails(self):
         r = self.adrs(1)
-        r.stage("docs/adr/" + fname(1), record(1, body="Left — right."))
+        r.stage("docs/adr/" + fname(1), record(1, body="Left " + chr(0x2014) + " right."))
         self.assertAdr(r, "em dash")
 
     def test_a_badly_named_file_fails(self):
@@ -188,6 +188,14 @@ class AdrTests(Base):
         self.assertPasses(r.run("verify"))
         r.git("add", "-A")
         self.assertAdr(r, "ADR-0001 row differs")
+
+    def test_vale_directive_comments_around_the_title_are_ignored(self):
+        r = self.adrs(1)
+        text = "<!-- vale HouseStyle.Headings = NO -->\n" + record(1).split("\n", 1)[0] + "\n<!-- vale HouseStyle.Headings = YES -->\n" + record(1).split("\n", 1)[1]
+        r.stage("docs/adr/" + fname(1), text)
+        self.assertPasses(r.run("verify"))
+        r.stage("docs/adr/" + fname(1), text.replace("Status: Active", "Status: Accepted"))
+        self.assertAdr(r, "Status: Active | Retired")
 
     def test_an_exempt_old_format_record_passes(self):
         r = self.adrs(1)
