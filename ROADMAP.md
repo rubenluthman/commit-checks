@@ -5,6 +5,7 @@
 - [ ] Next plan, two checks for the Swift apps:
   - Settings keys change only with a migration. Removing or renaming a stored setting fails unless the repository's settings-key register marks the old key retired and names its migration.
   - Log privacy. Each log value marked public needs a short reason on the same line.
+- [ ] A `roll-out` script: given a release tag, it updates the pin (and the loader copy, when the loader changed) in every repository on a list, commits each with the standard subject, skips repositories with uncommitted changes, and lists those whose checks demand a version bump. Pins stay explicit; no repository follows "latest".
 - [x] 0.2.0: Markdown links, Vale, decision-record format, version and CHANGELOG guards, Conventional Commits, `scan-archive`, `history`.
 
 ## Icebox
