@@ -139,13 +139,27 @@ def check_gitignore_baseline(ctx: Context) -> List[Finding]:
     return [f for f in out if not ctx.allowed(f)]
 
 
+def _hooks_path_ok(ctx: Context, value: str) -> bool:
+    if value == ".githooks":
+        return True
+    # The Claude desktop app sets an absolute path in a worktree's config: this worktree's hooks or the main checkout's.
+    if not value or not os.path.isabs(value):
+        return False
+    wanted = [os.path.join(ctx.root, ".githooks")]
+    common = gitutil.run(["rev-parse", "--path-format=absolute", "--git-common-dir"], ctx.root, ok=(0, 128))
+    common_dir = common.stdout.decode("utf-8", "replace").strip()
+    if common.returncode == 0 and os.path.isabs(common_dir):
+        wanted.append(os.path.join(os.path.dirname(common_dir), ".githooks"))
+    return os.path.realpath(value) in [os.path.realpath(w) for w in wanted]
+
+
 def check_hooks_installed(ctx: Context) -> List[Finding]:
     if os.environ.get("CI"):
         return []
     proc = gitutil.run(["config", "--get", "core.hooksPath"], ctx.root, ok=(0, 1))
     value = proc.stdout.decode("utf-8", "replace").strip()
     problems = []
-    if value != ".githooks":
+    if not _hooks_path_ok(ctx, value):
         problems.append("core.hooksPath is not .githooks (run scripts/install-hooks.sh)")
     for hook in ("pre-commit", "commit-msg", "pre-push"):
         path = os.path.join(ctx.root, ".githooks", hook)

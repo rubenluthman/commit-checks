@@ -1,6 +1,10 @@
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
 
-from support import Base, email, home_path, conflict_marker
+from support import Base, env_for, email, home_path, conflict_marker
 
 
 class HomePathTests(Base):
@@ -305,6 +309,40 @@ class HooksInstalledTests(Base):
         self._install(r)
         r.git("config", "core.hooksPath", "/dev/null")
         self.assertBlocks(r.run("verify", env={"CI": ""}), "core.hooksPath")
+
+    def _worktree(self, r):
+        r.git("-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "chore: start")
+        r.git("config", "extensions.worktreeConfig", "true")
+        wt = os.path.join(tempfile.mkdtemp(prefix="cc-wt-"), "wt")
+        self.addCleanup(shutil.rmtree, os.path.dirname(wt), True)
+        r.git("worktree", "add", "-q", "-b", "side", wt)
+        return os.path.realpath(wt)
+
+    def _in_worktree(self, r, wt, value):
+        env = env_for(extra={"CI": ""})
+        subprocess.run(["git", "config", "--worktree", "core.hooksPath", value], cwd=wt, check=True, env=env)
+        return subprocess.run([sys.executable, "-m", "commit_checks", "verify"], cwd=wt, capture_output=True, text=True, env=env)
+
+    def _hooked_main(self):
+        r = self.repo()
+        self._install(r)
+        r.git("add", ".githooks")
+        return r
+
+    def test_worktree_with_the_main_checkout_hooks_path_passes(self):
+        r = self._hooked_main()
+        wt = self._worktree(r)
+        self.assertPasses(self._in_worktree(r, wt, os.path.join(r.root, ".githooks")))
+
+    def test_worktree_with_its_own_absolute_hooks_path_passes(self):
+        r = self._hooked_main()
+        wt = self._worktree(r)
+        self.assertPasses(self._in_worktree(r, wt, os.path.join(wt, ".githooks")))
+
+    def test_worktree_with_another_absolute_path_fails(self):
+        r = self._hooked_main()
+        wt = self._worktree(r)
+        self.assertBlocks(self._in_worktree(r, wt, tempfile.gettempdir()), "core.hooksPath")
 
     def test_a_hook_that_does_not_call_the_package_fails(self):
         r = self.repo()
