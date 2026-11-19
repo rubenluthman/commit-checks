@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-11-19
+
 - The loader finds the repository root inside git hooks and linked worktrees, and fails when it is not at `scripts/commit-checks`.
 
 ## [0.2.5] - 2026-11-19
