@@ -2,9 +2,7 @@
 
 ## Active
 
-- [ ] Next plan, two checks for the Swift apps:
-  - Settings keys change only with a migration. Removing or renaming a stored setting fails unless the repository's settings-key register marks the old key retired and names its migration.
-  - Log privacy. Each log value marked public needs a short reason on the same line.
+- [x] Swift app checks: settings keys change only with a migration, and public log values carry a reason.
 - [ ] A `roll-out` script: given a release tag, it updates the pin (and the loader copy, when the loader changed) in every repository on a list, commits each with the standard subject, skips repositories with uncommitted changes, and lists those whose checks demand a version bump. Pins stay explicit; no repository follows "latest".
   - Judarn needs it too: pin adapters for npm (`package.json` and `package-lock.json`) and Swift packages (`Package.resolved` and the version requirement), and a hook that can stop before committing, so a release that changes what people see waits for approval.
 - [x] 0.2.0: Markdown links, Vale, decision-record format, version and CHANGELOG guards, Conventional Commits, `scan-archive`, `history`.

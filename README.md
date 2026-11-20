@@ -24,6 +24,8 @@ The point of the package is that a check never quietly passes. A missing tool, t
 | versions | A CHANGELOG whose top release differs from the version source; code changed under a released tag |
 | release tags | Lightweight release tags |
 | commit messages | Subjects that are not Conventional Commits |
+| settings keys | Swift apps with a `settings_keys` setting: a stored-setting key that is not registered, a registered key gone from the code, a retired key whose migration is missing |
+| log privacy | A Swift log value marked `privacy: .public` or `%{public}` without a same-line `// public: <reason>` comment |
 
 Text scans use [gitleaks](https://github.com/gitleaks/gitleaks) 8.30.1 (exactly that version) in two passes: its own default rules, then this package's rules for key shapes, home paths, emails and private names. Matched text is never printed; findings show the rule, file and line.
 
@@ -68,6 +70,32 @@ Add an entry to `allow` with a rule (a gitleaks rule ID, or a check name such as
 - `vale`: `{"globs": ["*.md"], "exclude": []}` picks the files Vale checks. The check runs only when the repository has a `.vale.ini`. A repository with a `CONTRIBUTING.md` gets a notice instead of a failure when Vale is missing locally; CI always fails.
 - `annotated_tags_from`: a version such as `0.1.10`; release tags below it may stay lightweight.
 - `conventional_commits`: `false` turns the subject check off. `subject_max`: a number limits the subject length.
+
+### Settings keys and log privacy
+
+Both checks are for Swift code and read the staged files.
+
+**log-privacy** runs in every repository with tracked `*.swift` files. A line containing `privacy: .public` or `%{public}` must carry a comment on the same line, `// public: <reason>`, with a reason. Turn it off only with an `allow` entry for the rule `log-privacy`.
+
+**settings-keys** runs only when `.commit-checks.json` has a `settings_keys` object. Removing or renaming a stored setting without a migration silently loses users' settings, so the register must say what happened to each key:
+
+```json
+"settings_keys": {
+  "paths": ["App/*.swift"],
+  "live": ["showBadge", "selectedTab"],
+  "retired": [{"key": "badge", "migration": "migrateBadgeKey", "reason": "renamed to showBadge"}],
+  "system": ["AppleInterfaceStyle"]
+}
+```
+
+- `paths`: globs of tracked Swift files to read.
+- `live`: keys the app stores today.
+- `retired`: keys no longer stored. `migration` is a name (a function, for example) that must appear in code under `paths`; comments do not count.
+- `system`: keys the app only reads.
+
+The check finds keys in `@AppStorage("…")`, `@SceneStorage("…")`, and `UserDefaults` calls such as `set`, `object`, `string` and `removeObject` with `forKey: "…"`. A key passed as a constant (`@AppStorage(Keys.tab)`, `forKey: Keys.tab.rawValue`) is looked up among the string constants and enum raw values in the same files. It ignores `CodingKeys` and dictionary calls such as `removeValue(forKey:)`. A key built at run time cannot be seen.
+
+It fails when a key in code is in no list, when a `live` key is no longer in code, when a retired entry's migration is not found, and when a key is listed twice. A glob that matches no tracked file is an error.
 
 ### Private names
 

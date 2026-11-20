@@ -9,7 +9,7 @@ from .errors import CheckError
 
 SETTINGS_FILE = ".commit-checks.json"
 VISIBILITIES = ("private", "public", "going-public")
-KNOWN_KEYS = {"version", "commit", "source", "visibility", "email_allow", "allow", "self", "release", "links_exclude", "adr_exempt", "vale", "conventional_commits", "subject_max", "annotated_tags_from"}
+KNOWN_KEYS = {"version", "commit", "source", "visibility", "email_allow", "allow", "self", "release", "links_exclude", "adr_exempt", "vale", "conventional_commits", "subject_max", "annotated_tags_from", "settings_keys"}
 
 
 class Settings:
@@ -48,4 +48,29 @@ def load(root: str) -> Settings:
     for entry in data.get("allow", []):
         if not isinstance(entry, dict) or not all(isinstance(entry.get(k), str) and entry.get(k) for k in ("rule", "path", "reason")):
             raise CheckError("settings: every allow entry needs rule, path and a written reason")
+    if "settings_keys" in data:
+        _validate_settings_keys(data["settings_keys"])
     return Settings(data)
+
+
+def _strings(value: Any, label: str, required: bool = False) -> None:
+    if not isinstance(value, list) or (required and not value) or not all(isinstance(v, str) and v for v in value):
+        raise CheckError("settings: settings_keys.%s must be a %slist of non-empty strings" % (label, "non-empty " if required else ""))
+
+
+def _validate_settings_keys(conf: Any) -> None:
+    if not isinstance(conf, dict):
+        raise CheckError("settings: settings_keys must be an object")
+    unknown = set(conf) - {"paths", "live", "retired", "system"}
+    if unknown:
+        raise CheckError("settings: unknown settings_keys entries: " + ", ".join(sorted(unknown)))
+    _strings(conf.get("paths"), "paths", required=True)
+    for name in ("live", "system"):
+        _strings(conf.get(name, []), name)
+    retired = conf.get("retired", [])
+    if not isinstance(retired, list):
+        raise CheckError("settings: settings_keys.retired must be a list")
+    for entry in retired:
+        if not isinstance(entry, dict) or set(entry) != {"key", "migration", "reason"} \
+                or not all(isinstance(v, str) and v for v in entry.values()):
+            raise CheckError("settings: every settings_keys.retired entry needs exactly key, migration and a written reason")

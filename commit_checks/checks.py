@@ -11,7 +11,7 @@ import re
 import subprocess
 from typing import Callable, Dict, List, Optional
 
-from . import archive, docs, engine, gitutil, history, names, release, rules, vale
+from . import archive, docs, engine, gitutil, history, names, release, rules, swiftchecks, vale
 from .errors import CheckError, Finding
 from .settings import Settings
 
@@ -278,6 +278,8 @@ CHECKS: Dict[str, Callable[[Context], List[Finding]]] = {
     "release-tags": lambda ctx: release.check_release_tags(ctx),
     "conventional-commits": lambda ctx: release.check_conventional_commits(ctx),
     "vale": lambda ctx: vale.check_vale(ctx),
+    "settings-keys": lambda ctx: swiftchecks.check_settings_keys(ctx),
+    "log-privacy": lambda ctx: swiftchecks.check_log_privacy(ctx),
     "archive": lambda ctx: [f for p in ctx.archives for f in archive.scan_archive(p, ctx.settings)],
     "history": lambda ctx: history.scan_history(ctx),
 }
@@ -286,13 +288,14 @@ TEXT = ["secrets", "home-paths", "emails", "private-names"]
 MODES: Dict[str, List[str]] = {
     "scan-archive": ["archive"],
     "history": ["history"],
-    "pre-commit": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "author-emails", "links", "adr-format", "versions"],
+    "pre-commit": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "author-emails", "links", "adr-format", "versions",
+                  "settings-keys", "log-privacy"],
     "commit-msg": TEXT + ["conventional-commits"],
     "pre-push": TEXT + ["author-emails", "conventional-commits"],
     "verify": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "hooks-installed", "loader-current", "links",
-                      "adr-format", "versions", "release-tags", "vale"],
+                      "adr-format", "versions", "release-tags", "vale", "settings-keys", "log-privacy"],
     "ci": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "loader-current", "visibility", "links",
-                  "adr-format", "versions", "release-tags", "vale"],
+                  "adr-format", "versions", "release-tags", "vale", "settings-keys", "log-privacy"],
 }
 
 
