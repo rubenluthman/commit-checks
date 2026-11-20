@@ -85,6 +85,15 @@ class SettingsKeyTests(Base):
                '        try c.encode(1, forKey: .a)\n        d.removeValue(forKey: "gone")\n        d.updateValue(1, forKey: "other")\n    }\n}\n')
         self.assertPasses(self.make(src, live=[], system=[]).run("verify"))
 
+    def test_key_value_coding_on_other_objects_is_ignored(self):
+        src = ('func qr(_ filter: CIFilter, _ data: Data, _ view: NSView) {\n'
+               '    filter.setValue(data, forKey: "inputMessage")\n    _ = view.value(forKey: "hasKeyboardFocus")\n}\n')
+        self.assertPasses(self.make(src, live=[], system=[]).run("verify"))
+        for use in ('UserDefaults.standard.setValue(1, forKey: "kvc")', 'defaults.setValue(1, forKey: "kvc")',
+                    '_ = sharedDefaults.value(forKey: "kvc")'):
+            with self.subTest(use=use):
+                self.assertBlocks(self.make(use + "\n", live=[], system=[]).run("verify"), "'kvc'")
+
     def test_comments_and_strings_do_not_hide_or_invent_keys(self):
         src = ('// @AppStorage("commented")\n/* UserDefaults.standard.set(1, forKey: "block") */\n'
                'let s = "@AppStorage(\\"inString\\")"\n@AppStorage("real") var r = 1\n')

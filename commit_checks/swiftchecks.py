@@ -23,6 +23,9 @@ DEFAULTS_METHODS = {"set", "object", "string", "bool", "integer", "double", "flo
                     "url", "stringArray", "removeObject", "value", "setValue"}
 TYPE_WORDS = {"enum", "struct", "class", "extension", "actor", "protocol"}
 NOT_NAMES = {"func", "var", "let", "init", "subscript", "where", "case"}
+# setValue(_:forKey:) and value(forKey:) are key-value coding, which every Objective-C object has (an image filter's
+# inputs, for one). They count only when called on something named like defaults: `defaults`, `UserDefaults.standard`.
+KVC_METHODS = {"setValue", "value"}
 STORAGE_WRAPPERS = {"AppStorage", "SceneStorage"}
 IGNORED_CONTAINERS = {"CodingKeys"}
 
@@ -162,10 +165,16 @@ def _arg(toks: List[Tok], j: int):
     return ("ref", names)
 
 
+def _defaults_call(method: str, receiver: str) -> bool:
+    if method not in DEFAULTS_METHODS:
+        return False
+    return method not in KVC_METHODS or "defaults" in receiver.lower() or receiver == "standard"
+
+
 def analyse(toks: List[Tok]) -> Tuple[List[Const], List[Use]]:
     consts, uses = [], []  # type: List[Const], List[Use]
     braces = []  # type: List[Optional[str]]
-    parens = []  # type: List[str]
+    parens = []  # type: List[Tuple[str, str]]  # (method name, receiver) for each open parenthesis
     pending = None  # type: Optional[str]
     n = len(toks)
     for i, t in enumerate(toks):
@@ -177,7 +186,9 @@ def analyse(toks: List[Tok]) -> Tuple[List[Const], List[Use]]:
                 if braces:
                     braces.pop()
             elif t.value == "(":
-                parens.append(toks[i - 1].value if i and toks[i - 1].kind == "id" else "")
+                method = toks[i - 1].value if i and toks[i - 1].kind == "id" else ""
+                receiver = toks[i - 3].value if i >= 3 and toks[i - 2].value == "." and toks[i - 3].kind == "id" else ""
+                parens.append((method, receiver))
             elif t.value == ")":
                 if parens:
                     parens.pop()
@@ -215,7 +226,7 @@ def analyse(toks: List[Tok]) -> Tuple[List[Const], List[Use]]:
             arg = None
             if v in STORAGE_WRAPPERS and i and toks[i - 1].value == "@" and i + 1 < n and toks[i + 1].value == "(":
                 arg = _arg(toks, i + 2)
-            elif v == "forKey" and i + 1 < n and toks[i + 1].value == ":" and parens and parens[-1] in DEFAULTS_METHODS:
+            elif v == "forKey" and i + 1 < n and toks[i + 1].value == ":" and parens and _defaults_call(*parens[-1]):
                 arg = _arg(toks, i + 2)
             if arg:
                 names = [b for b in braces if b]
