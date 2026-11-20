@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-20
+
 - New check `settings-keys` for Swift apps: with a `settings_keys` setting, a stored-setting key must be registered, and a removed or renamed key must be retired with a migration that exists in the code.
 - New check `log-privacy`: a log value marked `privacy: .public` or `%{public}` needs a same-line `// public: <reason>` comment.
 
