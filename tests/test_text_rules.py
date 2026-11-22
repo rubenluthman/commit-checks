@@ -285,6 +285,51 @@ class AuthorEmailTests(Base):
         proc = r.run("pre-push", use_names=True, stdin="refs/heads/main %s refs/heads/main %s\n" % (new, base))
         self.assertPasses(proc)
 
+    GH = "noreply@github." + "com"
+
+    def _pr_merge(self, author="1+t@users.noreply.github.com", committer=None):
+        """A commit as GitHub makes it on a web merge: the user is author, GitHub is committer."""
+        r = self.repo(visibility="public", commit_first=True)
+        base = r.git("rev-parse", "HEAD").stdout.strip()
+        r.stage("a.txt", "fine\n")
+        r.git("-c", "user.name=GitHub", "-c", "user.email=" + (committer or self.GH), "commit", "-q", "-m", "chore: merged",
+              "--author=Test <%s>" % author)
+        new = r.git("rev-parse", "HEAD").stdout.strip()
+        return r, "refs/heads/main %s refs/heads/main %s\n" % (new, base)
+
+    def test_github_as_committer_passes_in_range_mode(self):
+        r, stdin = self._pr_merge()
+        self.assertPasses(r.run("pre-push", use_names=True, stdin=stdin))
+
+    def test_github_as_committer_passes_in_history_mode(self):
+        r, _ = self._pr_merge()
+        self.assertPasses(r.run("history", use_names=True))
+
+    def test_github_as_author_fails_in_range_mode(self):
+        r, stdin = self._pr_merge(author=self.GH, committer="1+t@users.noreply.github.com")
+        self.assertBlocks(r.run("pre-push", use_names=True, stdin=stdin), "author-emails")
+
+    def test_github_as_author_fails_in_history_mode(self):
+        r, _ = self._pr_merge(author=self.GH)
+        self.assertBlocks(r.run("history", use_names=True), "FAIL author-emails")
+
+    def test_github_as_tagger_fails_in_history_mode(self):
+        r = self.repo(visibility="public", commit_first=True)
+        r.git("-c", "user.name=GitHub", "-c", "user.email=" + self.GH, "tag", "-a", "v0.1.0", "-m", "feat: first")
+        self.assertBlocks(r.run("history", use_names=True), "FAIL author-emails")
+
+    def test_look_alike_committer_addresses_fail(self):
+        for bad in ("x-" + self.GH, self.GH + ".evil", "a" + self.GH, email()):
+            r, stdin = self._pr_merge(committer=bad)
+            self.assertBlocks(r.run("pre-push", use_names=True, stdin=stdin), "author-emails")
+            self.assertBlocks(r.run("history", use_names=True), "FAIL author-emails")
+
+    def test_a_local_committer_is_never_github(self):
+        r = self.repo(visibility="public")
+        r.stage("a.txt", "fine\n")
+        proc = r.run("pre-commit", use_names=True, env={"GIT_COMMITTER_EMAIL": self.GH})
+        self.assertBlocks(proc, "author-emails")
+
 
 class HooksInstalledTests(Base):
     CHECK = "hooks-installed"

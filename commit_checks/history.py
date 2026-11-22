@@ -1,13 +1,10 @@
 """history: scan the whole history of a repository before it becomes public."""
 from __future__ import annotations
 
-import re
 from typing import List
 
 from . import checks, engine, gitutil, names
 from .errors import CheckError, Finding
-
-NOREPLY = re.compile(r"@users\.noreply\.github\.com$")
 
 
 def scan_history(ctx) -> List[Finding]:
@@ -24,14 +21,12 @@ def scan_history(ctx) -> List[Finding]:
         parts = row.split("\t")
         if len(parts) != 3:
             raise CheckError("unexpected git log line")
-        for addr in parts[1:]:
-            if not NOREPLY.search(addr) and not any(re.search(p, addr) for p in ctx.settings.email_allow):
-                out.append(Finding("author-emails", "commit " + parts[0], 0, "address is not the noreply address", "author-emails"))
-                break
+        if not checks.address_ok(parts[1], ctx) or not checks.address_ok(parts[2], ctx, committer=True):
+            out.append(Finding("author-emails", "commit " + parts[0], 0, "address is not the noreply address", "author-emails"))
     tagger = gitutil.run(["for-each-ref", "--format=%(taggeremail)", "refs/tags"], ctx.root).stdout.decode("utf-8", "replace").splitlines()
     for addr in tagger:
         addr = addr.strip("<>")
-        if addr and not NOREPLY.search(addr) and not any(re.search(p, addr) for p in ctx.settings.email_allow):
+        if addr and not checks.address_ok(addr, ctx):
             out.append(Finding("author-emails", "tag", 0, "tagger address is not the noreply address", "author-emails"))
             break
     return [f for f in out if not ctx.allowed(f)]

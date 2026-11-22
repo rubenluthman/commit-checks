@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- The author-address check accepts `noreply@github.com` as a commit's committer, so pull requests merged on GitHub pass. It is still rejected as author and as tagger, and a repository no longer needs `email_allow` for it.
+
 ## [0.3.0] - 2026-11-20
 
 - New check `settings-keys` for Swift apps: with a `settings_keys` setting, a stored-setting key must be registered, and a removed or renamed key must be retired with a migration that exists in the code.

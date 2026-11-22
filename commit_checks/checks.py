@@ -23,6 +23,8 @@ SECRET_FILE_OK = ["*.example", "*.sample", "*.template", "*.pub"]
 GITIGNORE_SAMPLES = [".env", ".env.local", ".dev.vars", ".dev.vars.production", "x.p8", "x.p12", "x.key", "x.pem",
                      "x.mobileprovision", "id_ed25519", "id_rsa"]
 NOREPLY = re.compile(r"@users\.noreply\.github\.com$")
+# GitHub itself is the committer of a pull request merged on the web. Only that role may use this address.
+GITHUB_COMMITTER = re.compile(r"^noreply@github\.com$")
 
 
 class Context:
@@ -178,8 +180,11 @@ def _addresses(text: str) -> List[str]:
     return [m for m in re.findall(r"<([^<>]*)>", text)]
 
 
-def _address_ok(address: str, ctx: Context) -> bool:
+def address_ok(address: str, ctx: Context, committer: bool = False) -> bool:
+    """The one rule for author, committer and tagger addresses. Only a commit's committer may be GitHub's own address."""
     if NOREPLY.search(address):
+        return True
+    if committer and GITHUB_COMMITTER.search(address):
         return True
     return any(re.search(p, address) for p in ctx.settings.email_allow)
 
@@ -195,17 +200,15 @@ def check_author_emails(ctx: Context) -> List[Finding]:
             parts = row.split("\t")
             if len(parts) != 3:
                 raise CheckError("unexpected git log line")
-            for addr in parts[1:]:
-                if not _address_ok(addr, ctx):
-                    found.append(Finding("author-emails", "commit " + parts[0], 0, "address is not the noreply address", "author-emails"))
-                    break
+            if not address_ok(parts[1], ctx) or not address_ok(parts[2], ctx, committer=True):
+                found.append(Finding("author-emails", "commit " + parts[0], 0, "address is not the noreply address", "author-emails"))
     else:
         for var in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"):
             ident = gitutil.run(["var", var], ctx.root).stdout.decode("utf-8", "replace")
             addrs = _addresses(ident)
             if not addrs:
                 raise CheckError("git has no %s address" % var.split("_")[1].lower())
-            if not all(_address_ok(a, ctx) for a in addrs):
+            if not all(address_ok(a, ctx) for a in addrs):
                 found.append(Finding("author-emails", var, 0, "address is not the noreply address", "author-emails"))
     return found
 

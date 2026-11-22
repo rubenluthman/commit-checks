@@ -16,7 +16,7 @@ The point of the package is that a check never quietly passes. A missing tool, t
 | conflict markers | Merge markers left in files |
 | `.gitignore` baseline | A `.gitignore` that does not ignore the secret file names above |
 | hooks installed | Git not pointed at the tracked hooks |
-| author addresses | Commit authors and committers that are not the GitHub noreply address (public repositories) |
+| author addresses | Commit authors, committers and tag authors that are not the GitHub noreply address (public repositories). GitHub's own `noreply@github.com` is accepted as a commit's committer only, so pull requests merged on GitHub pass without `email_allow` |
 | visibility | The settings file disagrees with what GitHub says (CI only) |
 | links | Relative Markdown links that do not point at a tracked file or folder, with exact case |
 | decision records | `docs/adr/` records and their index that break the format (title, status line, four headings, no em dash) |
