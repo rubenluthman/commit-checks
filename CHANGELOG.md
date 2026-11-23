@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-23
+
 - The author-address check accepts `noreply@github.com` as a commit's committer, so pull requests merged on GitHub pass. It is still rejected as author and as tagger, and a repository no longer needs `email_allow` for it.
 
 ## [0.3.0] - 2026-11-20
