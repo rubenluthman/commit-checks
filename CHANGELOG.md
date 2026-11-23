@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-24
+
 - New mode `roll-out`: moves every listed repository to release tags of `commit-checks` and `house-style` (`--pin NAME=vX.Y.Z`, repeatable) with one commit per pin, after checking each tag on its package's remote and running the repository's `./scripts/verify_commit.sh` once. Dry run by default; `--push` is opt-in.
 - It skips dirty, off-branch and unsynced repositories, never pushes someone else's work, and opens a pull request on `ci/shared-pins` for collaborative projects instead of pushing.
 - A repository under `scanRoot` that loads a package but is not listed makes the run exit 1.
