@@ -6,7 +6,7 @@ import subprocess
 import sys
 from typing import List, Optional
 
-from . import checks, gitutil, settings
+from . import checks, gitutil, rollout, settings
 from .errors import CheckError, Finding
 
 USAGE = """usage: commit-checks MODE
@@ -17,6 +17,8 @@ USAGE = """usage: commit-checks MODE
   ci                    verify, for CI; scans COMMIT_CHECKS_RANGE too when set
   scan-archive FILE...  scan a release archive (tar, tgz or zip) before it is published
   history               scan the whole history (every commit, message, author and tag), as for a repository about to go public
+  roll-out --list FILE --package NAME --to vX.Y.Z [--apply] [--push] [--approve NAME ...]
+                        move every listed consumer of a package to a release tag (dry run unless --apply)
 """
 ZERO = "0" * 40
 
@@ -51,6 +53,8 @@ def _run(argv: List[str]) -> int:
         sys.stdout.write(USAGE)
         return 0 if argv else 2
     mode = argv[0]
+    if mode == "roll-out":
+        return rollout.main(argv[1:])
     if mode not in checks.MODES:
         sys.stderr.write(USAGE)
         return 2

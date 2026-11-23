@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- New mode `roll-out`: moves every listed consumer of a package to a release tag, with a dry run by default, a check that the tag is on the package's remote, and a skip for dirty, off-branch and collaborative repositories. The `commit-checks` pin type edits `.commit-checks.json` and the loader and commits with the consumer's hooks on.
+
 ## [0.3.1] - 2026-11-23
 
 - The author-address check accepts `noreply@github.com` as a commit's committer, so pull requests merged on GitHub pass. It is still rejected as author and as tagger, and a repository no longer needs `email_allow` for it.
