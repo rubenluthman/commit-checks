@@ -74,6 +74,10 @@ class Pin:
 class PinType:
     name = ""
 
+    def subject(self, tag: str) -> str:
+        """The commit subject for moving this pin to `tag`."""
+        raise NotImplementedError
+
     def detect(self, root: str) -> bool:
         raise NotImplementedError
 
@@ -101,6 +105,42 @@ def _swap_value(text: str, key: str, value: str) -> str:
     return pattern.sub(lambda m: m.group(1) + json.dumps(value), text)
 
 
+def _local_clone(env_var: str, config_key: str, cwd: str, fallback: str = "") -> str:
+    candidates = [os.environ.get(env_var, "")]
+    proc = gitutil.run(["config", "--global", "--get", config_key], cwd, ok=(0, 1))
+    candidates.append(proc.stdout.decode("utf-8", "replace").strip())
+    candidates.append(fallback)
+    for path in candidates:
+        if path and os.path.isdir(path):
+            return os.path.realpath(path)
+    raise CheckError("no local package clone: set %s or git config --global %s" % (env_var, config_key))
+
+
+def _verified_tag(repo: str, tag: str) -> str:
+    """The commit a release tag points at, once the clone and its origin agree on it. Any doubt raises CheckError."""
+    if not TAG.match(tag):
+        raise CheckError("a release tag must look like v1.2.3")
+    local = gitutil.run(["rev-parse", "-q", "--verify", "refs/tags/%s^{commit}" % tag], repo, ok=(0, 1))
+    commit = local.stdout.decode().strip()
+    if local.returncode != 0 or not SHA.match(commit):
+        raise CheckError("tag %s is not in the local package clone" % tag)
+    origin = gitutil.run(["remote", "get-url", "origin"], repo, ok=(0, 2, 128))
+    url = origin.stdout.decode("utf-8", "replace").strip()
+    if origin.returncode != 0 or not url:
+        raise CheckError("the package clone has no origin remote to check the tag against")
+    listing = gitutil.run(["ls-remote", url, "refs/tags/" + tag, "refs/tags/%s^{}" % tag], repo, timeout=300)
+    refs = {}
+    for line in listing.stdout.decode("utf-8", "replace").splitlines():
+        sha, _sep, ref = line.partition("\t")
+        refs[ref.strip()] = sha.strip()
+    remote = refs.get("refs/tags/%s^{}" % tag) or refs.get("refs/tags/" + tag)
+    if not remote:
+        raise CheckError("tag %s is not on the package's remote; push it first" % tag)
+    if remote != commit:
+        raise CheckError("tag %s points at %s on the remote but at %s locally" % (tag, remote, commit))
+    return commit
+
+
 class CommitChecksPin(PinType):
     name = "commit-checks"
     SETTINGS = ".commit-checks.json"
@@ -115,41 +155,17 @@ class CommitChecksPin(PinType):
             return False
         return isinstance(data, dict) and "version" in data and "commit" in data
 
+    def subject(self, tag: str) -> str:
+        return "ci: load the shared commit checks at " + tag
+
     def package_repo(self) -> str:
         """The local clone that holds the package: COMMIT_CHECKS_PATH, the global git setting, or this source tree."""
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        candidates = [os.environ.get("COMMIT_CHECKS_PATH", "")]
-        proc = gitutil.run(["config", "--global", "--get", "commit-checks.path"], here, ok=(0, 1))
-        candidates.append(proc.stdout.decode("utf-8", "replace").strip())
-        candidates.append(here if os.path.exists(os.path.join(here, ".git")) else "")
-        for path in candidates:
-            if path and os.path.isdir(path):
-                return os.path.realpath(path)
-        raise CheckError("no local package clone: set COMMIT_CHECKS_PATH or git config --global commit-checks.path")
+        return _local_clone("COMMIT_CHECKS_PATH", "commit-checks.path", here, here if os.path.exists(os.path.join(here, ".git")) else "")
 
     def resolve_target(self, tag: str) -> Target:
-        if not TAG.match(tag):
-            raise CheckError("--to must look like v1.2.3")
         repo = self.package_repo()
-        local = gitutil.run(["rev-parse", "-q", "--verify", "refs/tags/%s^{commit}" % tag], repo, ok=(0, 1))
-        commit = local.stdout.decode().strip()
-        if local.returncode != 0 or not SHA.match(commit):
-            raise CheckError("tag %s is not in the local package clone" % tag)
-        origin = gitutil.run(["remote", "get-url", "origin"], repo, ok=(0, 2, 128))
-        url = origin.stdout.decode("utf-8", "replace").strip()
-        if origin.returncode != 0 or not url:
-            raise CheckError("the package clone has no origin remote to check the tag against")
-        listing = gitutil.run(["ls-remote", url, "refs/tags/" + tag, "refs/tags/%s^{}" % tag], repo, timeout=300)
-        refs = {}
-        for line in listing.stdout.decode("utf-8", "replace").splitlines():
-            sha, _sep, ref = line.partition("\t")
-            refs[ref.strip()] = sha.strip()
-        remote = refs.get("refs/tags/%s^{}" % tag) or refs.get("refs/tags/" + tag)
-        if not remote:
-            raise CheckError("tag %s is not on the package's remote; push it first" % tag)
-        if remote != commit:
-            raise CheckError("tag %s points at %s on the remote but at %s locally" % (tag, remote, commit))
-        return Target(self.name, tag, commit, repo)
+        return Target(self.name, tag, _verified_tag(repo, tag), repo)
 
     def inspect(self, root: str, target: Target) -> Pin:
         settings_path = os.path.join(root, self.SETTINGS)
@@ -183,4 +199,50 @@ class CommitChecksPin(PinType):
         return Pin("update" if files else "current", old_tag, files, notes)
 
 
-PIN_TYPES: Dict[str, PinType] = {p.name: p for p in (CommitChecksPin(),)}
+HOUSE_LINE = re.compile(
+    r"^(?P<head>Packages[ \t]*=[^\r\n]*?https://github\.com/[^/\s,]+/house-style/releases/download/)"
+    r"(?P<tag>v\d+\.\d+\.\d+)(?P<tail>/HouseStyle\.zip[^\r\n]*)$",
+    re.M,
+)
+
+
+class HouseStylePin(PinType):
+    """The Vale style package, pinned by URL in the `Packages` line of `.vale.ini`."""
+
+    name = "house-style"
+    FILE = ".vale.ini"
+
+    def subject(self, tag: str) -> str:
+        return "ci: load the house style at " + tag
+
+    def _text(self, root: str) -> Optional[str]:
+        path = os.path.join(root, self.FILE)
+        if not os.path.isfile(path):
+            return None
+        with open(path, encoding="utf-8", errors="replace", newline="") as fh:
+            return fh.read()
+
+    def detect(self, root: str) -> bool:
+        text = self._text(root)
+        return text is not None and HOUSE_LINE.search(text) is not None
+
+    def resolve_target(self, tag: str) -> Target:
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        repo = _local_clone("HOUSE_STYLE_PATH", "house-style.path", here)
+        return Target(self.name, tag, _verified_tag(repo, tag), repo)
+
+    def inspect(self, root: str, target: Target) -> Pin:
+        text = self._text(root)
+        found = list(HOUSE_LINE.finditer(text or ""))
+        if len(found) != 1:
+            raise CheckError(".vale.ini: expected exactly one house-style Packages line")
+        old = found[0].group("tag")
+        if old == target.tag:
+            return Pin("current", old)
+        new = HOUSE_LINE.sub(lambda m: m.group("head") + target.tag + m.group("tail"), text)
+        if [m.group("tag") for m in HOUSE_LINE.finditer(new)] != [target.tag]:
+            raise CheckError(".vale.ini edit did not produce the new pin")
+        return Pin("update", old, {self.FILE: new.encode("utf-8")})
+
+
+PIN_TYPES: Dict[str, PinType] = {p.name: p for p in (CommitChecksPin(), HouseStylePin())}

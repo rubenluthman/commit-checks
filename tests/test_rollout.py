@@ -12,7 +12,15 @@ from support import Base, env_for
 LOADER_V1 = "#!/usr/bin/env python3\n# loader one\n"
 LOADER_V2 = "#!/usr/bin/env python3\n# loader two\n"
 SETTINGS = '{\n  "version": "%s",\n  "commit": "%s",\n  "source": "https://example.com/pkg.git",\n  "visibility": "private"\n}\n'
+VALE = "StylesPath = .vale/styles\nPackages = https://github.com/acme/house-style/releases/download/%s/HouseStyle.zip\nMinAlertLevel = warning\n"
+VERIFY_OK = ("#!/bin/sh\necho run >> .git/verify-runs\ngit diff --cached --name-only > .git/verify-staged\n"
+             "cat .commit-checks.json .vale.ini > .git/verify-saw 2>/dev/null\nexit 0\n")
+VERIFY_BUMP = '#!/bin/sh\necho "code changed under the released tag; bump the version"\nexit 1\n'
+VERIFY_FAIL = '#!/bin/sh\necho "test suite exploded"\nexit 1\n'
+GH_STUB = '#!/bin/sh\necho "$@" >> "$GH_LOG"\necho https://example.com/acme/repo/pull/7\nexit 0\n'
+GH_FAIL = '#!/bin/sh\necho "gh broke" >&2\nexit 1\n'
 HOOK_BUMP = '#!/bin/sh\necho "code changed under the released tag v1.0.0; bump the version" >&2\nexit 1\n'
+HOOK_VALE = '#!/bin/sh\nif git diff --cached --name-only | grep -q vale.ini; then echo "style commit refused" >&2; exit 1; fi\nexit 0\n'
 HOOK_OTHER = '#!/bin/sh\necho "some other complaint" >&2\nexit 1\n'
 GATE = (
     "import os, sys\n"
@@ -49,6 +57,7 @@ class RollOutBase(Base):
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="cc-rollout-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.pkg, self.pkg_remote = self.make_package()
+        self.style, self.style_remote = self.make_style_package()
         self.consumers = []
 
     def make_package(self):
@@ -78,10 +87,28 @@ class RollOutBase(Base):
         git(pkg, "push", "-q", "origin", "main", "--tags")
         return pkg, remote
 
+    def make_style_package(self):
+        style = os.path.join(self.tmp, "style")
+        remote = os.path.join(self.tmp, "style-remote.git")
+        os.makedirs(style)
+        git(style, "init", "-q", "-b", "main")
+        git(style, "config", "user.email", "1+t@users.noreply.github.com")
+        git(style, "config", "user.name", "T")
+        for i, tag in enumerate(("v0.3.4", "v0.3.6")):
+            write(os.path.join(style, "rule.txt"), "%d\n" % i)
+            git(style, "add", "-A")
+            git(style, "commit", "-q", "-m", "style " + tag)
+            git(style, "tag", "-a", tag, "-m", tag)
+        git(self.tmp, "init", "-q", "--bare", remote)
+        git(style, "remote", "add", "origin", remote)
+        git(style, "push", "-q", "origin", "main", "--tags")
+        return style, remote
+
     def tag_commit(self, tag):
         return git(self.pkg, "rev-parse", tag + "^{commit}")
 
-    def make_consumer(self, name, tag="v1.0.0", loader=LOADER_V1, agents="# Agents\n", hook=None, branch="main"):
+    def make_consumer(self, name, tag="v1.0.0", loader=LOADER_V1, agents="# Agents\n", hook=None, branch="main",
+                      vale=None, verify=None, checks=True):
         root = os.path.join(self.tmp, "apps", name)
         remote = os.path.join(self.tmp, "remotes", name + ".git")
         os.makedirs(root)
@@ -89,9 +116,14 @@ class RollOutBase(Base):
         git(root, "init", "-q", "-b", "main")
         git(root, "config", "user.email", "1+t@users.noreply.github.com")
         git(root, "config", "user.name", "T")
-        write(os.path.join(root, ".commit-checks.json"), SETTINGS % (tag, self.tag_commit(tag)))
-        write(os.path.join(root, "scripts/commit-checks"), loader, 0o755)
+        if checks:
+            write(os.path.join(root, ".commit-checks.json"), SETTINGS % (tag, self.tag_commit(tag)))
+            write(os.path.join(root, "scripts/commit-checks"), loader, 0o755)
         write(os.path.join(root, "AGENTS.md"), agents)
+        if vale:
+            write(os.path.join(root, ".vale.ini"), VALE % vale)
+        if verify:
+            write(os.path.join(root, "scripts/verify_commit.sh"), verify, 0o755)
         git(root, "add", "-A")
         git(root, "commit", "-q", "-m", "chore: start")
         git(root, "remote", "add", "origin", remote)
@@ -112,10 +144,15 @@ class RollOutBase(Base):
         write(path, json.dumps(data))
         return path
 
-    def roll(self, to, *flags, list_path=None, env=None):
-        e = env_for(extra=dict({"COMMIT_CHECKS_PATH": self.pkg}, **(env or {})))
-        return subprocess.run([sys.executable, "-m", "commit_checks", "roll-out", "--list", list_path or self.write_list(),
-                               "--package", "commit-checks", "--to", to] + list(flags),
+    def roll(self, to, *flags, list_path=None, env=None, pins=None):
+        """`to` is the commit-checks tag; `pins` ({name: tag}) replaces it when given."""
+        e = env_for(extra=dict({"COMMIT_CHECKS_PATH": self.pkg, "HOUSE_STYLE_PATH": self.style}, **(env or {})))
+        pins = pins if pins is not None else {"commit-checks": to}
+        args = []
+        for name, tag in pins.items():
+            args += ["--pin", "%s=%s" % (name, tag)]
+        return subprocess.run([sys.executable, "-m", "commit_checks", "roll-out", "--list", list_path or self.write_list()]
+                              + args + list(flags),
                               cwd=self.tmp, capture_output=True, text=True, env=e, timeout=300, errors="replace")
 
     def settings(self, root):
@@ -139,7 +176,7 @@ class TestRollOut(RollOutBase):
         proc = self.roll("v1.1.0", "--apply")
         self.assertPasses(proc)
         self.assertIn("UPDATED", proc.stdout)
-        self.assertEqual(git(root, "log", "-1", "--format=%s"), "build(deps): update commit-checks to v1.1.0")
+        self.assertEqual(git(root, "log", "-1", "--format=%s"), "ci: load the shared commit checks at v1.1.0")
         data = self.settings(root)
         self.assertEqual((data["version"], data["commit"]), ("v1.1.0", self.tag_commit("v1.1.0")))
         expected = before.replace("v1.0.0", "v1.1.0").replace(self.tag_commit("v1.0.0"), self.tag_commit("v1.1.0"))
@@ -193,14 +230,6 @@ class TestRollOut(RollOutBase):
         self.assertIn("default branch", proc.stdout)
         self.assertUntouched(root, head)
 
-    def test_collaborative_skip(self):
-        root = self.make_consumer("alpha", agents="# Agents\n\nCollaborative: use branches and pull requests.\n")
-        head = self.head(root)
-        proc = self.roll("v1.1.0", "--apply")
-        self.assertBlocks(proc)
-        self.assertIn("collaborative", proc.stdout)
-        self.assertUntouched(root, head)
-
     def test_hook_demanding_a_version_bump_restores_files(self):
         root = self.make_consumer("alpha", hook=HOOK_BUMP)
         head = self.head(root)
@@ -246,7 +275,7 @@ class TestRollOut(RollOutBase):
 
     def test_failed_push_is_not_updated(self):
         root = self.make_consumer("alpha")
-        git(root, "remote", "set-url", "origin", os.path.join(self.tmp, "no-such-remote.git"))
+        git(root, "remote", "set-url", "--push", "origin", os.path.join(self.tmp, "no-such-remote.git"))
         proc = self.roll("v1.1.0", "--apply", "--push")
         self.assertBlocks(proc)
         self.assertIn("push failed", proc.stdout)
@@ -415,3 +444,340 @@ class TestList(RollOutBase):
 
     def test_missing_list_is_an_error(self):
         self.assertErrors(self.roll("v1.1.0", list_path=os.path.join(self.tmp, "nope.json")))
+
+
+class TestHouseStyle(RollOutBase):
+    CHECK = ""
+
+    def style_commit(self, tag):
+        return git(self.style, "rev-parse", tag + "^{commit}")
+
+    def test_house_style_rewrites_only_the_tag(self):
+        root = self.make_consumer("alpha", vale="v0.3.4", checks=False)
+        before = read(os.path.join(root, ".vale.ini"))
+        proc = self.roll(None, "--apply", pins={"house-style": "v0.3.6"})
+        self.assertPasses(proc)
+        self.assertEqual(read(os.path.join(root, ".vale.ini")), before.replace("v0.3.4", "v0.3.6"))
+        self.assertEqual(git(root, "log", "-1", "--format=%s"), "ci: load the house style at v0.3.6")
+        self.assertEqual(git(root, "show", "--name-only", "--format=", "HEAD"), ".vale.ini")
+
+    def test_vale_ini_without_a_house_style_line_is_not_a_consumer(self):
+        root = self.make_consumer("alpha", checks=False)
+        write(os.path.join(root, ".vale.ini"), "StylesPath = styles\nMinAlertLevel = warning\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "chore: vale")
+        head = self.head(root)
+        proc = self.roll(None, "--apply", pins={"house-style": "v0.3.6"})
+        self.assertBlocks(proc)
+        self.assertIn("SKIPPED", proc.stdout)
+        self.assertUntouched(root, head)
+
+    def test_other_package_url_is_not_edited(self):
+        root = self.make_consumer("alpha", checks=False)
+        write(os.path.join(root, ".vale.ini"), "Packages = https://github.com/acme/other-style/releases/download/v0.3.4/Other.zip\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "chore: vale")
+        self.assertBlocks(self.roll(None, "--apply", pins={"house-style": "v0.3.6"}))
+        self.assertIn("v0.3.4", read(os.path.join(root, ".vale.ini")))
+
+    def test_current_house_style(self):
+        root = self.make_consumer("alpha", vale="v0.3.6", checks=False)
+        head = self.head(root)
+        proc = self.roll(None, "--apply", pins={"house-style": "v0.3.6"})
+        self.assertPasses(proc)
+        self.assertIn("CURRENT", proc.stdout)
+        self.assertUntouched(root, head)
+
+    def test_house_style_tag_missing_in_clone(self):
+        root = self.make_consumer("alpha", vale="v0.3.4", checks=False)
+        head = self.head(root)
+        self.assertErrors(self.roll(None, "--apply", pins={"house-style": "v9.9.9"}), "local package clone")
+        self.assertUntouched(root, head)
+
+    def test_house_style_tag_missing_on_origin(self):
+        root = self.make_consumer("alpha", vale="v0.3.4", checks=False)
+        git(self.style, "tag", "-a", "v0.3.7", "-m", "v0.3.7")
+        self.assertErrors(self.roll(None, "--apply", pins={"house-style": "v0.3.7"}), "remote")
+        self.assertEqual(read(os.path.join(root, ".vale.ini")), VALE % "v0.3.4")
+
+    def test_house_style_tag_pointing_elsewhere_on_origin(self):
+        self.make_consumer("alpha", vale="v0.3.4", checks=False)
+        write(os.path.join(self.style, "more.txt"), "y\n")
+        git(self.style, "add", "-A")
+        git(self.style, "commit", "-q", "-m", "later")
+        git(self.style, "tag", "-a", "-f", "v0.3.6", "-m", "moved")
+        self.assertErrors(self.roll(None, "--apply", pins={"house-style": "v0.3.6"}), "remote")
+
+    def test_no_house_style_clone_is_an_error(self):
+        self.make_consumer("alpha", vale="v0.3.4", checks=False)
+        self.assertErrors(self.roll(None, pins={"house-style": "v0.3.6"}, env={"HOUSE_STYLE_PATH": os.path.join(self.tmp, "none")}))
+
+
+class TestSeveralPins(RollOutBase):
+    CHECK = ""
+    BOTH = {"commit-checks": "v1.1.0", "house-style": "v0.3.6"}
+
+    def log_dir(self):
+        return os.path.join(self.tmp, "logs")
+
+    def test_two_pins_make_two_commits_and_one_verification(self):
+        root = self.make_consumer("alpha", vale="v0.3.4", verify=VERIFY_OK)
+        start = self.head(root)
+        proc = self.roll(None, "--apply", "--log-dir", self.log_dir(), pins=self.BOTH)
+        self.assertPasses(proc)
+        subjects = git(root, "log", "--format=%s", start + "..HEAD").splitlines()
+        self.assertEqual(sorted(subjects), ["ci: load the house style at v0.3.6", "ci: load the shared commit checks at v1.1.0"])
+        self.assertEqual(len(subjects), 2)
+        for sha in git(root, "log", "--format=%H", start + "..HEAD").splitlines():
+            files = git(root, "show", "--name-only", "--format=", sha).splitlines()
+            self.assertEqual(len(set(f.startswith(".vale") for f in files)), 1)  # a commit holds one pin
+        self.assertEqual(read(os.path.join(root, ".git/verify-runs")).split(), ["run"])
+        staged = read(os.path.join(root, ".git/verify-staged")).split()
+        self.assertEqual(sorted(staged), [".commit-checks.json", ".vale.ini", "scripts/commit-checks"])  # verified the new pins
+        saw = read(os.path.join(root, ".git/verify-saw"))
+        self.assertIn("v1.1.0", saw)
+        self.assertIn("v0.3.6", saw)
+        self.assertEqual(git(root, "status", "--porcelain"), "")
+
+    def test_only_the_pin_that_is_behind_moves(self):
+        root = self.make_consumer("alpha", tag="v1.1.0", loader=LOADER_V2, vale="v0.3.4")
+        start = self.head(root)
+        self.assertPasses(self.roll(None, "--apply", pins=self.BOTH))
+        self.assertEqual(git(root, "log", "--format=%s", start + "..HEAD"), "ci: load the house style at v0.3.6")
+
+    def test_repository_that_loads_only_one_package(self):
+        a = self.make_consumer("alpha", vale="v0.3.4", checks=False)
+        b = self.make_consumer("beta")
+        proc = self.roll(None, "--apply", pins=self.BOTH)
+        self.assertPasses(proc)
+        self.assertEqual(git(a, "log", "--format=%s", "-1"), "ci: load the house style at v0.3.6")
+        self.assertEqual(git(b, "log", "--format=%s", "-1"), "ci: load the shared commit checks at v1.1.0")
+
+    def test_failing_second_commit_undoes_the_first(self):
+        root = self.make_consumer("alpha", vale="v0.3.4", hook=HOOK_VALE)
+        start = self.head(root)
+        proc = self.roll(None, "--apply", pins=self.BOTH)
+        self.assertBlocks(proc)
+        self.assertIn("style commit refused", proc.stdout)
+        self.assertUntouched(root, start)
+        self.assertEqual(self.settings(root)["version"], "v1.0.0")
+        self.assertEqual(read(os.path.join(root, ".vale.ini")), VALE % "v0.3.4")
+
+    def test_gate_with_two_pins_is_an_error(self):
+        self.make_consumer("alpha")
+        write(os.path.join(self.tmp, "gate.py"), GATE)
+        write(os.path.join(self.tmp, "gate.json"), "{}")
+        lst = self.write_list({"gate": [sys.executable, "gate.py", "gate.json", "{tag}"]})
+        self.assertErrors(self.roll(None, list_path=lst, pins=self.BOTH), "exactly one --pin")
+
+    def test_bad_pin_arguments_are_errors(self):
+        self.make_consumer("alpha")
+        self.assertErrors(self.roll(None, pins={"nope": "v1.0.0"}))
+        self.assertErrors(self.roll(None, "--pin", "commit-checks=v1.0.1", pins={"commit-checks": "v1.0.0"}))
+        self.assertErrors(self.roll(None, pins={"commit-checks": ""}))
+        self.assertErrors(self.roll(None, pins={}))
+
+
+class TestVerify(RollOutBase):
+    CHECK = ""
+
+    def test_verification_failure_restores_and_logs(self):
+        root = self.make_consumer("alpha", verify=VERIFY_FAIL)
+        head = self.head(root)
+        logs = os.path.join(self.tmp, "logs")
+        proc = self.roll("v1.1.0", "--apply", "--log-dir", logs)
+        self.assertBlocks(proc)
+        self.assertIn("CHECKS FAIL", proc.stdout)
+        self.assertIn("test suite exploded", proc.stdout)
+        self.assertIn(logs, proc.stdout)
+        self.assertIn("test suite exploded", read(os.path.join(logs, "alpha.log")))
+        self.assertUntouched(root, head)
+        self.assertEqual(self.settings(root)["version"], "v1.0.0")
+        self.assertEqual(read(os.path.join(root, "scripts/commit-checks")), LOADER_V1)
+
+    def test_verification_asking_for_a_bump(self):
+        root = self.make_consumer("alpha", verify=VERIFY_BUMP)
+        head = self.head(root)
+        proc = self.roll("v1.1.0", "--apply")
+        self.assertBlocks(proc)
+        self.assertIn("NEEDS A VERSION BUMP", proc.stdout)
+        self.assertUntouched(root, head)
+
+    def test_default_log_folder_is_printed(self):
+        self.make_consumer("alpha", verify=VERIFY_OK)
+        proc = self.roll("v1.1.0", "--apply")
+        self.assertPasses(proc)
+        line = [l for l in proc.stdout.splitlines() if l.startswith("verification logs:")][0]
+        folder = line.split(": ", 1)[1]
+        self.addCleanup(shutil.rmtree, folder, True)
+        self.assertTrue(os.path.isfile(os.path.join(folder, "alpha.log")))
+
+    def test_dry_run_does_not_verify(self):
+        root = self.make_consumer("alpha", verify=VERIFY_FAIL)
+        proc = self.roll("v1.1.0")
+        self.assertPasses(proc)
+        self.assertNotIn("verification logs", proc.stdout)
+
+    def test_missing_script_is_noted_and_the_hooks_decide(self):
+        root = self.make_consumer("alpha")
+        proc = self.roll("v1.1.0", "--apply")
+        self.assertPasses(proc)
+        self.assertIn("no scripts/verify_commit.sh", proc.stdout)
+        self.assertEqual(self.settings(root)["version"], "v1.1.0")
+
+    def test_failed_verification_in_one_repository_leaves_the_others_moving(self):
+        a = self.make_consumer("alpha", verify=VERIFY_FAIL)
+        b = self.make_consumer("beta", verify=VERIFY_OK)
+        self.assertBlocks(self.roll("v1.1.0", "--apply"))
+        self.assertEqual(self.settings(a)["version"], "v1.0.0")
+        self.assertEqual(self.settings(b)["version"], "v1.1.0")
+
+
+class TestCollaborative(RollOutBase):
+    CHECK = ""
+    AGENTS = "# Agents\n\nCollaborative: use branches and pull requests.\n"
+
+    def gh_env(self, script=GH_STUB):
+        stub = os.path.join(self.tmp, "stub-bin")
+        write(os.path.join(stub, "gh"), script, 0o755)
+        return {"PATH": stub + os.pathsep + os.environ.get("PATH", ""), "GH_LOG": os.path.join(self.tmp, "gh.log")}
+
+    def test_apply_commits_on_a_branch_and_switches_back(self):
+        root = self.make_consumer("alpha", agents=self.AGENTS, verify=VERIFY_OK)
+        head = self.head(root)
+        proc = self.roll("v1.1.0", "--apply")
+        self.assertPasses(proc)
+        self.assertIn("UPDATED", proc.stdout)
+        self.assertEqual(git(root, "symbolic-ref", "--short", "HEAD"), "main")
+        self.assertUntouched(root, head)
+        self.assertEqual(self.settings(root)["version"], "v1.0.0")
+        self.assertEqual(git(root, "log", "-1", "--format=%s", "ci/shared-pins"), "ci: load the shared commit checks at v1.1.0")
+        self.assertEqual(git(root, "rev-parse", "ci/shared-pins~1"), head)
+
+    def test_push_pushes_the_branch_and_opens_a_pull_request(self):
+        root = self.make_consumer("alpha", agents=self.AGENTS)
+        head = self.head(root)
+        env = self.gh_env()
+        proc = self.roll("v1.1.0", "--apply", "--push", env=env)
+        self.assertPasses(proc)
+        self.assertIn("https://example.com/acme/repo/pull/7", proc.stdout)
+        self.assertEqual(git(root, "ls-remote", "origin", "refs/heads/main").split()[0], head)  # the default branch is untouched
+        self.assertEqual(git(root, "ls-remote", "origin", "refs/heads/ci/shared-pins").split()[0], git(root, "rev-parse", "ci/shared-pins"))
+        calls = read(env["GH_LOG"])
+        self.assertIn("pr create", calls)
+        self.assertIn("--head ci/shared-pins", calls)
+        self.assertNotIn("merge", calls)
+
+    def test_failing_gh_is_blocked(self):
+        root = self.make_consumer("alpha", agents=self.AGENTS)
+        proc = self.roll("v1.1.0", "--apply", "--push", env=self.gh_env(GH_FAIL))
+        self.assertBlocks(proc)
+        self.assertIn("pull request failed", proc.stdout)
+        self.assertNotIn("UPDATED", proc.stdout)
+
+    def test_failed_verification_removes_the_branch(self):
+        root = self.make_consumer("alpha", agents=self.AGENTS, verify=VERIFY_FAIL)
+        head = self.head(root)
+        self.assertBlocks(self.roll("v1.1.0", "--apply"))
+        self.assertUntouched(root, head)
+        self.assertEqual(git(root, "branch", "--list", "ci/shared-pins"), "")
+        self.assertEqual(git(root, "symbolic-ref", "--short", "HEAD"), "main")
+
+    def test_existing_branch_is_a_skip(self):
+        root = self.make_consumer("alpha", agents=self.AGENTS)
+        git(root, "branch", "ci/shared-pins")
+        head = self.head(root)
+        proc = self.roll("v1.1.0", "--apply")
+        self.assertBlocks(proc)
+        self.assertIn("already exists", proc.stdout)
+        self.assertUntouched(root, head)
+
+    def test_dry_run_says_it_would_open_a_pull_request(self):
+        root = self.make_consumer("alpha", agents=self.AGENTS)
+        proc = self.roll("v1.1.0")
+        self.assertPasses(proc)
+        self.assertIn("pull request", proc.stdout)
+        self.assertEqual(git(root, "branch", "--list", "ci/shared-pins"), "")
+
+
+class TestPushSafety(RollOutBase):
+    CHECK = ""
+
+    def remote_commit(self, root, name):
+        """A commit pushed to origin by someone else."""
+        other = os.path.join(self.tmp, "other-" + name)
+        git(self.tmp, "clone", "-q", "-b", "main", git(root, "remote", "get-url", "origin"), other)
+        git(other, "config", "user.email", "1+t@users.noreply.github.com")
+        git(other, "config", "user.name", "T")
+        write(os.path.join(other, "theirs.txt"), "t\n")
+        git(other, "add", "-A")
+        git(other, "commit", "-q", "-m", "their work")
+        git(other, "push", "-q", "origin", "main")
+
+    def local_commit(self, root):
+        write(os.path.join(root, "mine.txt"), "m\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "my unpushed work")
+
+    def test_ahead_of_origin_is_skipped(self):
+        root = self.make_consumer("alpha")
+        self.local_commit(root)
+        head = self.head(root)
+        proc = self.roll("v1.1.0", "--apply", "--push")
+        self.assertBlocks(proc)
+        self.assertIn("ahead of origin", proc.stdout)
+        self.assertUntouched(root, head)
+
+    def test_behind_origin_is_skipped(self):
+        root = self.make_consumer("alpha")
+        self.remote_commit(root, "alpha")
+        head = self.head(root)
+        proc = self.roll("v1.1.0", "--apply", "--push")
+        self.assertBlocks(proc)
+        self.assertIn("behind origin", proc.stdout)
+        self.assertUntouched(root, head)
+
+    def test_diverged_is_skipped(self):
+        root = self.make_consumer("alpha")
+        self.remote_commit(root, "alpha")
+        self.local_commit(root)
+        head = self.head(root)
+        proc = self.roll("v1.1.0", "--apply", "--push")
+        self.assertBlocks(proc)
+        self.assertIn("diverged", proc.stdout)
+        self.assertUntouched(root, head)
+
+    def test_in_sync_is_pushed(self):
+        root = self.make_consumer("alpha")
+        self.assertPasses(self.roll("v1.1.0", "--apply", "--push"))
+        self.assertEqual(git(root, "ls-remote", "origin", "refs/heads/main").split()[0], self.head(root))
+
+    def test_ahead_is_only_checked_when_pushing(self):
+        root = self.make_consumer("alpha")
+        self.local_commit(root)
+        self.assertPasses(self.roll("v1.1.0", "--apply"))
+        self.assertEqual(self.settings(root)["version"], "v1.1.0")
+
+
+class TestUnlisted(RollOutBase):
+    CHECK = ""
+
+    def test_unlisted_consumer_fails_the_run(self):
+        self.make_consumer("alpha")
+        self.make_consumer("beta", checks=False, vale="v0.3.4")  # loads only the house style
+        lst = self.write_list({"scanRoot": "apps"}, consumers=[self.consumers[0]])
+        proc = self.roll(None, list_path=lst, pins={"commit-checks": "v1.1.0", "house-style": "v0.3.6"})
+        self.assertBlocks(proc)
+        self.assertIn("UNLISTED       beta loads house-style", proc.stdout)
+
+    def test_complete_list_passes(self):
+        self.make_consumer("alpha")
+        self.make_consumer("beta")
+        lst = self.write_list({"scanRoot": "apps"})
+        self.assertPasses(self.roll("v1.1.0", list_path=lst))
+
+    def test_repository_that_loads_no_given_package_is_not_unlisted(self):
+        self.make_consumer("alpha")
+        self.make_consumer("beta", vale="v0.3.4", checks=False)
+        lst = self.write_list({"scanRoot": "apps"}, consumers=[self.consumers[0]])
+        self.assertPasses(self.roll("v1.1.0", list_path=lst))

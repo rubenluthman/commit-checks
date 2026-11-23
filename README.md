@@ -107,21 +107,23 @@ One regular expression per line, case-insensitive, `#` for comments. The list li
 
 ## Rolling out a release
 
-`roll-out` moves every consumer of a package to a release tag: it edits the pin, commits with the subject `build(deps): update commit-checks to vX.Y.Z`, and reports each repository it could not move. Any consumer's `scripts/commit-checks` runs it, so the loader needs no change.
+`roll-out` moves every consumer of the shared packages to release tags. For each repository it edits the pins, runs the repository's own verification once, then commits each pin on its own. Any consumer's `scripts/commit-checks` runs it, so the loader needs no change.
 
 ```
-scripts/commit-checks roll-out --list FILE --package commit-checks --to vX.Y.Z [--apply] [--push] [--approve NAME ...]
+scripts/commit-checks roll-out --list FILE --pin NAME=vX.Y.Z [--pin NAME=vX.Y.Z ...] [--apply] [--push] [--log-dir DIR] [--approve NAME ...]
 ```
 
-- Without `--apply` it only reports. `--apply` edits and commits. `--push` (only with `--apply`) also pushes each new commit to the default branch.
-- `--package` picks the pin type. Today that is `commit-checks`: it sets `version` and `commit` in `.commit-checks.json` without touching the file's other content, and replaces `scripts/commit-checks` with the target's `templates/loader.py` when they differ. Changed `templates/githooks/*`, `templates/install-hooks.sh` or `templates/workflows/*` between the consumer's old release and the target are reported, never copied.
-- The package comes from a local clone, found by `COMMIT_CHECKS_PATH`, then `git config --global commit-checks.path`. Before any edit the tag must exist on that clone's `origin` and point at the same commit; otherwise the command exits 2 and touches nothing.
-- The list file is JSON and stays outside the repository: `{"scanRoot": "<folder>", "gate": ["<command>", "{tag}"], "consumers": [{"name": "...", "path": "..."}]}`. `scanRoot` and `gate` are optional; relative paths resolve against the list file's folder. Repositories up to two folders below `scanRoot` that load the package but are not listed are reported as `UNLISTED`.
-- A consumer is skipped, without edits, when it has any uncommitted change, is not on its default branch, or its `AGENTS.md` contains `Collaborative:`. A consumer already on the target is `CURRENT`.
-- The gate runs once, with `{tag}` replaced, and prints JSON: `{"<name>": {"decision": "go" | "hold", "reason": "..."}}`. A held consumer is not edited unless named with `--approve`. A gate that fails, prints bad JSON or leaves a consumer out holds it.
-- The commit runs the consumer's hooks. If it fails, the edited files are restored and the hook's output is shown; when the hook asks for a version bump, the consumer is reported as `NEEDS A VERSION BUMP`. A consumer counts as updated only after a commit that contains the new pin.
+- Without `--apply` it only reports. `--apply` edits, verifies and commits. `--push` (only with `--apply`) also pushes.
+- `--pin` is repeatable; each name picks a pin type. `commit-checks` sets `version` and `commit` in `.commit-checks.json` without touching the file's other content, and replaces `scripts/commit-checks` with the target's `templates/loader.py` when they differ; it commits as `ci: load the shared commit checks at vX.Y.Z`. Changed `templates/githooks/*`, `templates/install-hooks.sh` or `templates/workflows/*` between the consumer's old release and the target are reported, never copied. `house-style` rewrites only the tag in the `Packages` line of `.vale.ini` that points at `https://github.com/<owner>/house-style/releases/download/vX.Y.Z/HouseStyle.zip`; it commits as `ci: load the house style at vX.Y.Z`. A `.vale.ini` without such a line is not a consumer.
+- Each package comes from a local clone: `COMMIT_CHECKS_PATH` or `git config --global commit-checks.path` (this source tree is the last fallback), and `HOUSE_STYLE_PATH` or `git config --global house-style.path`. Before any edit every tag must exist in its clone and on that clone's `origin`, and point at the same commit; otherwise the command exits 2 and touches nothing.
+- The list file is JSON and stays outside the repository: `{"scanRoot": "<folder>", "gate": ["<command>", "{tag}"], "consumers": [{"name": "...", "path": "..."}]}`. `scanRoot` and `gate` are optional; relative paths resolve against the list file's folder. A repository up to two folders below `scanRoot` that loads any given package but is not listed is reported as `UNLISTED` and makes the run exit 1.
+- A consumer is skipped, without edits, when it has any uncommitted change or is not on its default branch. With `--push`, after a `git fetch`, it is also skipped when its default branch is ahead of, behind or diverged from `origin`, so the command never pushes someone else's work. A consumer already on every target is `CURRENT`.
+- A project whose `AGENTS.md` contains `Collaborative: use branches and pull requests.` gets a pull request. `--apply` commits on a new branch `ci/shared-pins` cut from the default branch and switches back; `--push` pushes that branch and runs `gh pr create`. The command never merges.
+- With `--apply`, after the pins are written and staged, it runs `./scripts/verify_commit.sh` once from the repository root and saves the output in `--log-dir` (default: a new temporary folder, printed). If it fails, every edit is undone and the consumer is `CHECKS FAIL`, or `NEEDS A VERSION BUMP` when the output says "bump the version"; the last lines and the log path are shown. A repository without the script is verified by its commit hooks only, with a note. The command takes no lock: a consumer's script queues its own heavy steps.
+- The gate takes exactly one `--pin` (more is an error). It runs once, with `{tag}` replaced, and prints JSON: `{"<name>": {"decision": "go" | "hold", "reason": "..."}}`. A held consumer is not edited unless named with `--approve`. A gate that fails, prints bad JSON or leaves a consumer out holds it.
+- Each commit runs the consumer's hooks. If one fails, every edit and earlier commit of the run is undone and the hook's output is shown. A consumer counts as updated only after commits that contain the new pins.
 
-Exit code 0 means every consumer is current, updated (or would be, in a dry run) or a local-path reference; 1 means some consumer was skipped, held or blocked; 2 means the command could not run.
+Exit code 0 means every consumer is current, updated (or would be, in a dry run) or a local-path reference, and no unlisted consumer exists; 1 means some consumer was skipped, held, blocked or failed its checks, or one is unlisted; 2 means the command could not run.
 
 ## Tests
 

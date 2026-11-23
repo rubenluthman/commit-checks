@@ -1,16 +1,19 @@
-"""roll-out: move every consumer of a shared package to a release tag.
+"""roll-out: move every consumer of the shared packages to release tags.
 
 Dry run unless --apply. Exit 0: every consumer is current, updated or a local-path reference.
-Exit 1: some consumer was skipped, held or blocked. Exit 2: the command could not run.
+Exit 1: some consumer was skipped, held, blocked or failed its checks, or a repository that loads
+a package is missing from the list. Exit 2: the command could not run.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
-from typing import Dict, List, Optional, Set
+import tempfile
+from typing import Dict, List, Optional, Set, Tuple
 
 from . import gitutil
 from .errors import CheckError
@@ -18,7 +21,11 @@ from .pins import PIN_TYPES, Pin, PinType, Target
 
 OK = {"updated", "would update", "current", "local"}
 COMMIT_TIMEOUT = 900  # the consumer's own hooks run during the commit
+VERIFY_TIMEOUT = 4 * 3600  # a consumer's own verification script, which may wait for the machine-wide lock
 BUMP_HINT = "bump the version"
+VERIFY_SCRIPT = "scripts/verify_commit.sh"
+COLLAB_LINE = "Collaborative: use branches and pull requests."
+PR_BRANCH = "ci/shared-pins"
 
 
 class Result:
@@ -109,86 +116,199 @@ def _tail(text: str, lines: int = 15) -> str:
     return "\n".join(text.strip().splitlines()[-lines:])
 
 
-def _restore(root: str, paths: List[str]) -> None:
-    _git(root, "reset", "-q", "HEAD", "--", *paths, ok=(0, 1))
-    _git(root, "checkout", "HEAD", "--", *paths)
+def _is_collaborative(root: str) -> bool:
+    agents = os.path.join(root, "AGENTS.md")
+    if not os.path.isfile(agents):
+        return False
+    with open(agents, encoding="utf-8", errors="replace") as fh:
+        return COLLAB_LINE in fh.read()
 
 
-def process(entry: Dict[str, str], ptype: PinType, target: Target, apply: bool, push: bool,
-            held: Optional[str]) -> Result:
+def _sync_problem(root: str, branch: str) -> Optional[str]:
+    """After a fetch: why the default branch must not be pushed from (ahead, behind or diverged), else None."""
+    _git(root, "fetch", "-q", "origin")
+    remote = "refs/remotes/origin/" + branch
+    if _git(root, "show-ref", "--verify", "-q", remote, ok=(0, 1)).returncode != 0:
+        return "origin has no %s branch" % branch
+    counts = _git(root, "rev-list", "--left-right", "--count", "%s...%s" % (branch, remote)).stdout.decode().split()
+    ahead, behind = int(counts[0]), int(counts[1])
+    if ahead and behind:
+        return "%s has diverged from origin" % branch
+    if ahead:
+        return "%s is ahead of origin: it has unpushed commits that are not ours" % branch
+    if behind:
+        return "%s is behind origin; pull first" % branch
+    return None
+
+
+Planned = Tuple[PinType, Target, Pin]
+
+
+class Run:
+    """Settings shared by every repository in one run."""
+
+    def __init__(self, apply: bool, push: bool, log_dir: str):
+        self.apply = apply
+        self.push = push
+        self.log_dir = log_dir
+
+
+def process(entry: Dict[str, str], pins: List[Tuple[PinType, Target]], run: Run, held: Optional[str]) -> Result:
     name, root = entry["name"], entry["path"]
     if not os.path.isdir(root):
         return Result(name, "blocked", "folder not found")
     try:
         if os.path.realpath(gitutil.toplevel(root)) != os.path.realpath(root):
             return Result(name, "blocked", "not the root of a git repository")
-        if not ptype.detect(root):
-            return Result(name, "skipped", "does not load %s" % ptype.name)
-        pin = ptype.inspect(root, target)
-        if pin.status == "current":
-            return Result(name, "current", pin.current, pin.notes)
-        if pin.status == "local":
-            return Result(name, "local", "local-path reference, not edited", pin.notes)
-        if pin.status != "update":
-            raise CheckError("pin type returned an unknown status")
+        planned: List[Planned] = []
+        for ptype, target in pins:
+            if ptype.detect(root):
+                planned.append((ptype, target, ptype.inspect(root, target)))
+        if not planned:
+            return Result(name, "skipped", "does not load %s" % " or ".join(p[0].name for p in pins))
+        notes = [n for _t, _g, pin in planned for n in pin.notes]
+        for _t, _g, pin in planned:
+            if pin.status not in ("current", "local", "update"):
+                raise CheckError("pin type returned an unknown status")
+        updates = [x for x in planned if x[2].status == "update"]
+        if not updates:
+            if any(x[2].status == "local" for x in planned):
+                return Result(name, "local", "local-path reference, not edited", notes)
+            return Result(name, "current", ", ".join("%s %s" % (t.name, pin.current) for t, _g, pin in planned), notes)
         if _git(root, "status", "--porcelain").stdout.strip():
-            return Result(name, "skipped", "has uncommitted changes", pin.notes)
+            return Result(name, "skipped", "has uncommitted changes", notes)
         branch, default = current_branch(root), default_branch(root)
         if default is None:
-            return Result(name, "skipped", "cannot tell the default branch", pin.notes)
+            return Result(name, "skipped", "cannot tell the default branch", notes)
         if branch != default:
-            return Result(name, "skipped", "on %s, not the default branch %s" % (branch or "a detached HEAD", default), pin.notes)
-        agents = os.path.join(root, "AGENTS.md")
-        if os.path.isfile(agents):
-            with open(agents, encoding="utf-8", errors="replace") as fh:
-                if "Collaborative:" in fh.read():
-                    return Result(name, "skipped", "collaborative project", pin.notes)
+            return Result(name, "skipped", "on %s, not the default branch %s" % (branch or "a detached HEAD", default), notes)
+        collab = _is_collaborative(root)
+        if collab and _git(root, "show-ref", "--verify", "-q", "refs/heads/" + PR_BRANCH, ok=(0, 1)).returncode == 0:
+            return Result(name, "skipped", "branch %s already exists" % PR_BRANCH, notes)
         if held is not None:
-            return Result(name, "held", held, pin.notes)
-        paths = sorted(pin.files)
+            return Result(name, "held", held, notes)
+        if run.push:
+            problem = _sync_problem(root, default)
+            if problem:
+                return Result(name, "skipped", problem, notes)
+        paths: List[str] = []
+        for _t, _g, pin in updates:
+            for rel in sorted(pin.files):
+                if rel in paths:
+                    raise CheckError("two pins edit %s" % rel)
+                paths.append(rel)
         for rel in paths:
             if _git(root, "ls-files", "--error-unmatch", "--", rel, ok=(0, 1)).returncode != 0:
                 raise CheckError("%s is not tracked" % rel)
-        verb = "%s -> %s" % (pin.current, target.tag)
-        if not apply:
-            return Result(name, "would update", "%s (%s)" % (verb, ", ".join(paths)), pin.notes)
-        return _commit(name, root, pin, paths, ptype.name, target, branch, push, verb)
+        verb = "; ".join("%s %s -> %s" % (t.name, pin.current, g.tag) for t, g, pin in updates)
+        if not run.apply:
+            where = ", opens a pull request" if collab else ""
+            return Result(name, "would update", "%s (%s%s)" % (verb, ", ".join(paths), where), notes)
+        return _apply(name, root, updates, run, default, collab, verb, notes)
     except (CheckError, OSError, subprocess.SubprocessError) as exc:
         return Result(name, "blocked", str(exc))
 
 
-def _commit(name: str, root: str, pin: Pin, paths: List[str], package: str, target: Target, branch: str,
-            push: bool, verb: str) -> Result:
-    subject = "build(deps): update %s to %s" % (package, target.tag)
+def _rollback(root: str, start: str, default: str, collab: bool) -> None:
+    """Undo everything the run did here. The repository was clean when the run began."""
+    _git(root, "reset", "-q", "--hard", start)
+    if collab and current_branch(root) != default:
+        _git(root, "checkout", "-q", default)
+    if collab:
+        _git(root, "branch", "-q", "-D", PR_BRANCH, ok=(0, 1))
+
+
+def _verify(name: str, root: str, run: Run) -> Tuple[int, str, str]:
+    """Run the consumer's verify_commit.sh once. Returns (exit code, output, log path)."""
+    os.makedirs(run.log_dir, exist_ok=True)
+    log = os.path.join(run.log_dir, re.sub(r"[^A-Za-z0-9._-]", "_", name) + ".log")
+    with open(log, "wb") as fh:
+        code = subprocess.run(["./" + VERIFY_SCRIPT], cwd=root, stdout=fh, stderr=subprocess.STDOUT, timeout=VERIFY_TIMEOUT).returncode
+    with open(log, encoding="utf-8", errors="replace") as fh:
+        return code, fh.read(), log
+
+
+def _apply(name: str, root: str, updates: List[Planned], run: Run, default: str, collab: bool, verb: str,
+           notes: List[str]) -> Result:
+    start = _git(root, "rev-parse", "HEAD").stdout.decode().strip()
+    paths = sorted(rel for _t, _g, pin in updates for rel in pin.files)
+    failure: Optional[Result] = None
     try:
-        pin.write(root)
-        _git(root, "add", "--", *paths)
-        proc = subprocess.run(["git", "commit", "-q", "-m", subject], cwd=root, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, timeout=COMMIT_TIMEOUT, env=gitutil.clean_env())
+        if collab:
+            _git(root, "checkout", "-q", "-b", PR_BRANCH)
+        for _t, _g, pin in updates:
+            pin.write(root)
+        _git(root, "add", "--", *paths)  # the consumer's verification scans what is staged
+        if os.path.isfile(os.path.join(root, VERIFY_SCRIPT)):
+            code, output, log = _verify(name, root, run)
+            if code != 0:
+                status = "needs a version bump" if BUMP_HINT in output else "checks fail"
+                failure = Result(name, status, "%s failed (exit %d); files restored; log: %s" % (VERIFY_SCRIPT, code, log),
+                                 [_tail(output)] + notes)
+        else:
+            notes = notes + ["no %s; only the commit hooks checked this" % VERIFY_SCRIPT]
+        if failure is None:
+            _git(root, "reset", "-q", "HEAD", "--", *paths)
+            for ptype, target, pin in updates:
+                subject = ptype.subject(target.tag)
+                _git(root, "add", "--", *sorted(pin.files))
+                proc = subprocess.run(["git", "commit", "-q", "-m", subject], cwd=root, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, timeout=COMMIT_TIMEOUT, env=gitutil.clean_env())
+                output = proc.stdout.decode("utf-8", "replace")
+                if proc.returncode != 0:
+                    status = "needs a version bump" if BUMP_HINT in output else "blocked"
+                    detail = "the commit hook refused the pin" if status != "blocked" else "the commit failed"
+                    failure = Result(name, status, detail + "; files restored", [_tail(output)] + notes)
+                    break
+                if not pin.committed(root, "HEAD"):
+                    failure = Result(name, "blocked", "the new commit does not contain the new pin; files restored", notes)
+                    break
     except BaseException:
-        _restore(root, paths)
+        _rollback(root, start, default, collab)
         raise
-    output = proc.stdout.decode("utf-8", "replace")
-    if proc.returncode != 0:
-        _restore(root, paths)
-        leftover = _git(root, "status", "--porcelain").stdout.strip()
-        note = "; files restored" if not leftover else "; WARNING: the repository is still not clean"
-        if BUMP_HINT in output:
-            return Result(name, "needs a version bump", "the commit hook refused the pin" + note, [_tail(output)] + pin.notes)
-        return Result(name, "blocked", "the commit failed" + note, [_tail(output)] + pin.notes)
-    if not pin.committed(root, "HEAD"):
-        return Result(name, "blocked", "the new commit does not contain the new pin; check it by hand", pin.notes)
-    if push:
-        sent = subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/" + branch], cwd=root,
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300, env=gitutil.clean_env())
-        if sent.returncode != 0:
-            return Result(name, "blocked", "committed, but the push failed", [_tail(sent.stdout.decode("utf-8", "replace"))] + pin.notes)
-        return Result(name, "updated", verb + ", pushed", pin.notes)
-    return Result(name, "updated", verb + ", not pushed", pin.notes)
+    if failure is not None:
+        _rollback(root, start, default, collab)
+        if _git(root, "status", "--porcelain").stdout.strip():
+            failure.detail += "; WARNING: the repository is still not clean"
+        return failure
+    if collab:
+        _git(root, "checkout", "-q", default)
+    if _git(root, "status", "--porcelain").stdout.strip():
+        notes = notes + ["the repository is not clean after the run; check it by hand"]
+    if not run.push:
+        return Result(name, "updated", verb + (", committed on %s, not pushed" % PR_BRANCH if collab else ", not pushed"), notes)
+    if collab:
+        return _open_pull_request(name, root, updates, default, verb, notes)
+    sent = subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/" + default], cwd=root,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300, env=gitutil.clean_env())
+    if sent.returncode != 0:
+        return Result(name, "blocked", "committed, but the push failed", [_tail(sent.stdout.decode("utf-8", "replace"))] + notes)
+    return Result(name, "updated", verb + ", pushed", notes)
 
 
-def find_unlisted(consumers: Consumers, ptype: PinType) -> List[str]:
-    """Repositories under scanRoot (two folder levels deep) that load the package but are not listed."""
+def _open_pull_request(name: str, root: str, updates: List[Planned], default: str, verb: str, notes: List[str]) -> Result:
+    sent = subprocess.run(["git", "push", "-q", "origin", "%s:refs/heads/%s" % (PR_BRANCH, PR_BRANCH)], cwd=root,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300, env=gitutil.clean_env())
+    if sent.returncode != 0:
+        return Result(name, "blocked", "committed on %s, but the push failed" % PR_BRANCH,
+                      [_tail(sent.stdout.decode("utf-8", "replace"))] + notes)
+    subjects = [t.subject(g.tag) for t, g, _p in updates]
+    title = subjects[0] if len(subjects) == 1 else "ci: update the shared pins"
+    body = "Moves the shared pins, one commit each:\n\n" + "\n".join("- " + s for s in subjects) + \
+           "\n\n`./scripts/verify_commit.sh` passed on the new pins before the commits were made.\n"
+    try:
+        made = subprocess.run(["gh", "pr", "create", "--base", default, "--head", PR_BRANCH, "--title", title, "--body", body],
+                              cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return Result(name, "blocked", "branch pushed, but gh failed to run: %s" % exc, notes)
+    text = made.stdout.decode("utf-8", "replace")
+    if made.returncode != 0:
+        return Result(name, "blocked", "branch pushed, but the pull request failed", [_tail(text)] + notes)
+    return Result(name, "updated", "%s, pull request opened: %s" % (verb, _tail(text, 1)), notes)
+
+
+def find_unlisted(consumers: Consumers, ptypes: List[PinType]) -> List[Tuple[str, List[str]]]:
+    """Repositories under scanRoot (two folder levels deep) that load a package but are not listed."""
     if not consumers.scan_root:
         return []
     if not os.path.isdir(consumers.scan_root):
@@ -202,21 +322,33 @@ def find_unlisted(consumers: Consumers, ptype: PinType) -> List[str]:
 
     for first in subdirs(consumers.scan_root):
         for cand in [first] + subdirs(first):
-            if os.path.exists(os.path.join(cand, ".git")) and ptype.detect(cand) and os.path.realpath(cand) not in listed:
-                found.append(os.path.relpath(cand, consumers.scan_root))
+            if os.path.exists(os.path.join(cand, ".git")) and os.path.realpath(cand) not in listed:
+                loads = [p.name for p in ptypes if p.detect(cand)]
+                if loads:
+                    found.append((os.path.relpath(cand, consumers.scan_root), loads))
     return found
 
 
 def parse(argv: List[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="commit-checks roll-out", description="Move every consumer of a package to a release tag (dry run unless --apply).")
+    p = argparse.ArgumentParser(prog="commit-checks roll-out", description="Move every consumer of the shared packages to release tags (dry run unless --apply).")
     p.add_argument("--list", required=True, help="private JSON file naming the consumers")
-    p.add_argument("--package", required=True, choices=sorted(PIN_TYPES))
-    p.add_argument("--to", required=True, metavar="vX.Y.Z", help="release tag to move to")
-    p.add_argument("--apply", action="store_true", help="edit and commit (default: report only)")
-    p.add_argument("--push", action="store_true", help="push each new commit to the default branch (needs --apply)")
+    p.add_argument("--pin", action="append", required=True, metavar="NAME=vX.Y.Z",
+                   help="package and release tag to move to; repeat for several (%s)" % ", ".join(sorted(PIN_TYPES)))
+    p.add_argument("--apply", action="store_true", help="edit, verify and commit (default: report only)")
+    p.add_argument("--push", action="store_true", help="push each new commit to the default branch, or open a pull request for a collaborative project (needs --apply)")
+    p.add_argument("--log-dir", metavar="DIR", help="where each consumer's verification output goes (default: a new temporary folder)")
     p.add_argument("--approve", action="append", nargs="+", default=[], metavar="NAME", help="move held consumers after a look")
     ns = p.parse_args(argv)  # a usage error exits 2
     ns.approve = [n for group in ns.approve for n in group]
+    pins: Dict[str, str] = {}
+    for item in ns.pin:
+        name, sep, tag = item.partition("=")
+        if not sep or name not in PIN_TYPES or not tag:
+            p.error("--pin needs NAME=vX.Y.Z with NAME one of: %s" % ", ".join(sorted(PIN_TYPES)))
+        if name in pins:
+            p.error("--pin names %s twice" % name)
+        pins[name] = tag
+    ns.pins = pins
     return ns
 
 
@@ -225,21 +357,32 @@ def main(argv: List[str]) -> int:
     if ns.push and not ns.apply:
         raise CheckError("--push needs --apply")
     consumers = load_list(ns.list)
+    if consumers.gate and len(ns.pins) != 1:
+        raise CheckError("a list with a gate takes exactly one --pin")
     names = {e["name"] for e in consumers.entries}
     for n in ns.approve:
         if n not in names:
             raise CheckError("--approve names a consumer that is not listed: " + n)
-    ptype = PIN_TYPES[ns.package]
-    target = ptype.resolve_target(ns.to)  # confirms the release on the remote before anything is touched
+    # Every release is confirmed on its remote before anything is touched.
+    pins = [(PIN_TYPES[n], PIN_TYPES[n].resolve_target(tag)) for n, tag in sorted(ns.pins.items())]
     decisions: Dict[str, Dict[str, str]] = {}
     gate_error = ""
     if consumers.gate:
         try:
-            decisions = run_gate(consumers, ns.to)
+            decisions = run_gate(consumers, pins[0][1].tag)
         except CheckError as exc:
             gate_error = str(exc)
-    unlisted = find_unlisted(consumers, ptype)
+    unlisted = find_unlisted(consumers, [p[0] for p in pins])
+    log_dir = ""
+    if ns.apply:
+        log_dir = os.path.abspath(ns.log_dir) if ns.log_dir else tempfile.mkdtemp(prefix="commit-checks-roll-out-")
+    run = Run(ns.apply, ns.push, log_dir)
 
+    out = sys.stdout
+    out.write("roll-out %s (%s)\n" % (", ".join("%s %s" % (t.package, t.tag) for _p, t in pins),
+                                      "apply" if ns.apply else "dry run, nothing edited"))
+    if log_dir:
+        out.write("verification logs: %s\n" % log_dir)
     results = []
     for entry in consumers.entries:
         held = None
@@ -252,17 +395,15 @@ def main(argv: List[str]) -> int:
                     held = "the gate did not give a go or hold for it"
                 elif d["decision"] == "hold":
                     held = "gate: " + str(d.get("reason", "no reason given"))
-        results.append(process(entry, ptype, target, ns.apply, ns.push, held))
+        results.append(process(entry, pins, run, held))
 
-    out = sys.stdout
-    out.write("roll-out %s to %s (%s)\n" % (ns.package, ns.to, "apply" if ns.apply else "dry run, nothing edited"))
     for r in results:
         out.write("%-14s %s%s\n" % (r.status.upper(), r.name, (": " + r.detail) if r.detail else ""))
         for note in r.notes:
             for line in note.splitlines():
                 out.write("    " + line + "\n")
-    for rel in unlisted:
-        out.write("UNLISTED       %s loads %s but is not in the list\n" % (rel, ns.package))
+    for rel, loads in unlisted:
+        out.write("UNLISTED       %s loads %s but is not in the list\n" % (rel, ", ".join(loads)))
     bad = [r for r in results if r.status not in OK]
-    out.write("%d consumer(s); %d need attention.\n" % (len(results), len(bad)))
-    return 1 if bad else 0
+    out.write("%d consumer(s); %d need attention.\n" % (len(results), len(bad) + len(unlisted)))
+    return 1 if bad or unlisted else 0

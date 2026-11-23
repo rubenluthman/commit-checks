@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-- New mode `roll-out`: moves every listed consumer of a package to a release tag, with a dry run by default, a check that the tag is on the package's remote, and a skip for dirty, off-branch and collaborative repositories. The `commit-checks` pin type edits `.commit-checks.json` and the loader and commits with the consumer's hooks on.
+- New mode `roll-out`: moves every listed repository to release tags of `commit-checks` and `house-style` (`--pin NAME=vX.Y.Z`, repeatable) with one commit per pin, after checking each tag on its package's remote and running the repository's `./scripts/verify_commit.sh` once. Dry run by default; `--push` is opt-in.
+- It skips dirty, off-branch and unsynced repositories, never pushes someone else's work, and opens a pull request on `ci/shared-pins` for collaborative projects instead of pushing.
+- A repository under `scanRoot` that loads a package but is not listed makes the run exit 1.
 
 ## [0.3.1] - 2026-11-23
 
