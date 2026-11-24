@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- The `versions` check no longer asks for a version bump when the only changes under a `release.code` pattern are files that the `docs_only` setting counts as docs.
 - New mode `docs-only`: exits 0 when every changed file matches the new `docs_only` setting, so a repository's verify script can skip its build and tests. It exits 1 whenever it cannot prove that.
 
 ## [0.4.0] - 2026-11-24

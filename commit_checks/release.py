@@ -6,7 +6,7 @@ import json
 import re
 from typing import List, Optional, Set
 
-from . import gitutil
+from . import changes, gitutil
 from .docs import read_index
 from .errors import CheckError, Finding
 
@@ -89,7 +89,10 @@ def check_versions(ctx) -> List[Finding]:
         tagged = proc.stdout.decode().strip()
         changed = gitutil.split_z(gitutil.run(["diff", "--cached", "--name-only", "-z", "--no-renames", tagged], ctx.root).stdout)
         globs = conf.get("code", ["*"])
-        code = [p for p in changed if any(fnmatch.fnmatchcase(p, g) or fnmatch.fnmatchcase(p.rsplit("/", 1)[-1], g) for g in globs)]
+        docs = ctx.settings.data.get("docs_only")
+        code = [p for p in changed
+                if any(fnmatch.fnmatchcase(p, g) or fnmatch.fnmatchcase(p.rsplit("/", 1)[-1], g) for g in globs)
+                and not (docs is not None and changes.is_doc(p, docs))]
         if code:
             out.append(Finding("versions", code[0], 0, "code changed under the released tag %s; bump the version" % tag, "versions"))
     return [f for f in out if not ctx.allowed(f)]

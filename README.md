@@ -21,7 +21,7 @@ The point of the package is that a check never quietly passes. A missing tool, t
 | links | Relative Markdown links that do not point at a tracked file or folder, with exact case |
 | decision records | `docs/adr/` records and their index that break the format (title, status line, four headings, no em dash) |
 | house style | Vale alerts, with the pinned style package synced when its pin changes |
-| versions | A CHANGELOG whose top release differs from the version source; code changed under a released tag |
+| versions | A CHANGELOG whose top release differs from the version source; code changed under a released tag (files `docs_only` counts as docs never count) |
 | release tags | Lightweight release tags |
 | commit messages | Subjects that are not Conventional Commits |
 | settings keys | Swift apps with a `settings_keys` setting: a stored-setting key that is not registered, a registered key gone from the code, a retired key whose migration is missing |
@@ -64,7 +64,7 @@ Add an entry to `allow` with a rule (a gitleaks rule ID, or a check name such as
 
 ### Other settings
 
-- `release`: `{"source": {"type": "package-json|xcode|pyproject|plist|regex", "path": "...", "pattern": "..."}, "changelog": "CHANGELOG.md", "code": ["*.swift"]}` turns on the version checks. `code` lists the file patterns that count as code under a released tag (default: every file).
+- `release`: `{"source": {"type": "package-json|xcode|pyproject|plist|regex", "path": "...", "pattern": "..."}, "changelog": "CHANGELOG.md", "code": ["*.swift"]}` turns on the version checks. `code` lists the file patterns that count as code under a released tag (default: every file). Files that `docs_only` counts as docs never count as code, even under a matching pattern; see [Skipping builds on docs changes](#skipping-builds-on-docs-changes).
 - `links_exclude`: path patterns the link check skips.
 - `adr_exempt`: record numbers that keep an old format and skip the heading check.
 - `vale`: `{"globs": ["*.md"], "exclude": []}` picks the files Vale checks. The check runs only when the repository has a `.vale.ini`. A repository with a `CONTRIBUTING.md` gets a notice instead of a failure when Vale is missing locally; CI always fails.
@@ -113,7 +113,7 @@ One regular expression per line, case-insensitive, `#` for comments. The list li
 "docs_only": {"paths": ["*.md"], "except": ["platforms/*", "docs/DESIGN.md"]}
 ```
 
-A path is docs when it matches a `paths` pattern and no `except` pattern. Patterns match the whole repository-relative path (`*` also crosses `/`), never the bare file name, so `README.md` does not cover `src/Button/README.md`. A bare `*` in `paths` is rejected.
+The `versions` check reads the same list, so docs that no build reads and no package ships need no version bump. A path is docs when it matches a `paths` pattern and no `except` pattern. Patterns match the whole repository-relative path (`*` also crosses `/`), never the bare file name, so `README.md` does not cover `src/Button/README.md`. A bare `*` in `paths` is rejected.
 
 The mode looks at staged and unstaged changes, deletions, both sides of a rename, and untracked files that are not ignored. It prints one line saying why. Exit 0: every changed file is docs. Exit 1: code changed, or it cannot prove docs-only (no setting, no commit yet, no changes, `CI` set). Exit 2: it could not run. Without the setting it always exits 1. Every failure lands in the full run:
 

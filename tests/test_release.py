@@ -96,6 +96,41 @@ class VersionTests(Base):
         r.stage("notes.txt", "x\n")
         self.assertPasses(r.run("pre-commit"))
 
+    def _released_with(self, code, docs_only, path, *more):
+        r = self._released()
+        settings = {"release": {"source": {"type": "package-json", "path": "package.json"}, "code": code}}
+        if docs_only is not None:
+            settings["docs_only"] = docs_only
+        r.settings(**settings)
+        r.git("add", ".commit-checks.json")
+        r.commit("chore: settings")
+        r.git("tag", "-d", "v1.2.3")
+        r.git("tag", "-a", "v1.2.3", "-m", "release")
+        for p in (path,) + more:
+            r.stage(p, "x\n")
+        return r
+
+    def test_docs_under_a_code_glob_need_no_bump(self):
+        r = self._released_with(["tools/*"], {"paths": ["*.md"]}, "tools/x/README.md")
+        self.assertPasses(r.run("pre-commit"))
+        self.assertPasses(r.run("verify"))
+
+    def test_without_docs_only_the_same_docs_need_a_bump(self):
+        r = self._released_with(["tools/*"], None, "tools/x/README.md")
+        self.assertBlocks(r.run("pre-commit"), "code changed under the released tag")
+
+    def test_a_doc_in_except_counts_as_code(self):
+        r = self._released_with(["docs/*"], {"paths": ["*.md"], "except": ["docs/DESIGN.md"]}, "docs/DESIGN.md")
+        self.assertBlocks(r.run("pre-commit"), "code changed under the released tag")
+
+    def test_code_under_the_glob_needs_a_bump_despite_docs_only(self):
+        r = self._released_with(["tools/*"], {"paths": ["*.md"]}, "tools/x/main.js")
+        self.assertBlocks(r.run("pre-commit"), "code changed under the released tag")
+
+    def test_code_and_docs_together_need_a_bump(self):
+        r = self._released_with(["tools/*"], {"paths": ["*.md"]}, "tools/x/main.js", "tools/x/README.md")
+        self.assertBlocks(r.run("pre-commit"), "code changed under the released tag")
+
     def test_the_clean_tagged_commit_passes(self):
         r = self._released()
         self.assertPasses(r.run("verify"))
