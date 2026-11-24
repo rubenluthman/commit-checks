@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `pre-push` rejects pushing a release tag that is not annotated, honoring `annotated_tags_from` and `allow` entries for `release-tags`.
+
 ## [0.5.1] - 2026-11-24
 
 - `roll-out` gains the pin type `judarn` (`--pin judarn=vX.Y.Z`). Per repository it moves every form it matches: `@judarn/ui` in `package.json` (lockfile made by `npm install --package-lock-only`, never edited to a version npm lacks), `exact:` in `Package.swift`, or an exact version in an Xcode project, plus `Package.resolved`. A non-exact reference is reported as `MANUAL` and never edited; a local-path reference is noted.

@@ -69,7 +69,7 @@ Add an entry to `allow` with a rule (a gitleaks rule ID, or a check name such as
 - `links_exclude`: path patterns the link check skips.
 - `adr_exempt`: record numbers that keep an old format and skip the heading check.
 - `vale`: `{"globs": ["*.md"], "exclude": []}` picks the files Vale checks. The check runs only when the repository has a `.vale.ini`. A repository with a `CONTRIBUTING.md` gets a notice instead of a failure when Vale is missing locally; CI always fails.
-- `annotated_tags_from`: a version such as `0.1.10`; release tags below it may stay lightweight.
+- `annotated_tags_from`: a version such as `0.1.10`; release tags below it may stay lightweight. `pre-push` applies the same rule to release tags being pushed, so a lightweight one is stopped before it reaches the remote.
 - `conventional_commits`: `false` turns the subject check off. `subject_max`: a number limits the subject length.
 
 ### Settings keys and log privacy

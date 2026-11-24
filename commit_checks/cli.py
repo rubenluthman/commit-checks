@@ -6,7 +6,7 @@ import subprocess
 import sys
 from typing import List, Optional
 
-from . import changes, checks, gitutil, rollout, settings
+from . import changes, checks, gitutil, release, rollout, settings
 from .errors import CheckError, Finding
 
 USAGE = """usage: commit-checks MODE
@@ -51,6 +51,17 @@ def _ref_ranges(root: str, stdin_text: str) -> List[str]:
     return ranges
 
 
+def _pushed_refs(stdin_text: str) -> List[tuple]:
+    refs = []
+    for line in stdin_text.splitlines():
+        parts = line.split()
+        if len(parts) != 4:
+            raise CheckError("unexpected pre-push input")
+        if parts[1] != ZERO:
+            refs.append((parts[0], parts[1]))
+    return refs
+
+
 def _run(argv: List[str]) -> int:
     if not argv or argv[0] in ("-h", "--help", "help"):
         sys.stdout.write(USAGE)
@@ -87,7 +98,9 @@ def _run(argv: List[str]) -> int:
             text = fh.read()
         findings = checks.run_mode(mode, checks.Context(root, conf, "message", message=text))
     elif mode == "pre-push":
-        for revspec in _ref_ranges(root, sys.stdin.read()):
+        stdin_text = sys.stdin.read()
+        findings += release.check_pushed_tags(checks.Context(root, conf, "range"), _pushed_refs(stdin_text))
+        for revspec in _ref_ranges(root, stdin_text):
             ctx = checks.Context(root, conf, "range", revspec=revspec, message=_log_messages(root, revspec))
             findings += checks.run_mode(mode, ctx)
     elif mode in ("verify", "ci"):

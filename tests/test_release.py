@@ -302,6 +302,43 @@ class ReleaseTagTests(Base):
         r.settings(allow=[{"rule": "release-tags", "path": "v0.1.0", "reason": "created before the annotation rule"}])
         self.assertPasses(r.run("verify"))
 
+    def push_tag(self, r, name):
+        sha = r.git("rev-parse", name).stdout.strip()
+        return r.run("pre-push", stdin="refs/tags/%s %s refs/tags/%s %s\n" % (name, sha, name, "0" * 40))
+
+    def test_pushing_a_lightweight_release_tag_fails(self):
+        r = self.repo(commit_first=True)
+        r.git("tag", "v1.0.0")
+        self.assertBlocks(self.push_tag(r, "v1.0.0"), "FAIL release-tags: v1.0.0")
+
+    def test_pushing_an_annotated_release_tag_passes(self):
+        r = self.repo(commit_first=True)
+        r.git("tag", "-a", "v1.0.0", "-m", "release")
+        self.assertPasses(self.push_tag(r, "v1.0.0"))
+
+    def test_pushing_a_tag_below_the_floor_or_allowed_or_not_a_release_passes(self):
+        r = self.repo(commit_first=True)
+        r.git("tag", "v0.1.4")
+        r.git("tag", "v0.2.0")
+        r.git("tag", "backup")
+        r.settings(annotated_tags_from="0.1.10")
+        self.assertPasses(self.push_tag(r, "v0.1.4"))
+        self.assertPasses(self.push_tag(r, "backup"))
+        self.assertBlocks(self.push_tag(r, "v0.2.0"), "FAIL release-tags: v0.2.0")
+        r.settings(allow=[{"rule": "release-tags", "path": "v0.2.0", "reason": "created before the annotation rule"}])
+        self.assertPasses(self.push_tag(r, "v0.2.0"))
+
+    def test_deleting_a_release_tag_passes(self):
+        r = self.repo(commit_first=True)
+        r.git("tag", "v1.0.0")
+        proc = r.run("pre-push", stdin="(delete) %s refs/tags/v1.0.0 %s\n" % ("0" * 40, "a" * 40))
+        self.assertPasses(proc)
+
+    def test_an_unreadable_pushed_object_is_an_error(self):
+        r = self.repo(commit_first=True)
+        proc = r.run("pre-push", stdin="refs/tags/v1.0.0 %s refs/tags/v1.0.0 %s\n" % ("b" * 40, "0" * 40))
+        self.assertErrors(proc, "")
+
 
 class CommitMessageTests(Base):
     CHECK = "conventional-commits"

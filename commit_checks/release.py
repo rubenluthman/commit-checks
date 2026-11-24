@@ -172,23 +172,41 @@ def _version_tuple(text: str):
     return tuple(int(x) for x in m.groups()) if m else None
 
 
-def check_release_tags(ctx) -> List[Finding]:
-    """Release tags (vX.Y.Z or X.Y.Z) are annotated."""
-    proc = gitutil.run(["for-each-ref", "--format=%(refname:short)%09%(objecttype)", "refs/tags"], ctx.root)
-    out = []
+def _untagged_release(ctx, name: str, kind: str) -> List[Finding]:
+    """A finding when `name` is a release tag at or above `annotated_tags_from` and `kind` is not an annotated tag."""
     since = ctx.settings.data.get("annotated_tags_from")
     floor = _version_tuple(since) if since else None
     if since and floor is None:
         raise CheckError("annotated_tags_from must look like 1.2.3")
+    if floor is not None:
+        ver = _version_tuple(name)
+        if ver is not None and ver < floor:
+            return []
+    if re.match(r"^v?\d+\.\d+\.\d+", name) and kind != "tag":
+        f = Finding("release-tags", name, 0, "release tag is not annotated; recreate it with git tag -a", "release-tags")
+        return [] if ctx.allowed(f) else [f]
+    return []
+
+
+def check_release_tags(ctx) -> List[Finding]:
+    """Release tags (vX.Y.Z or X.Y.Z) are annotated."""
+    proc = gitutil.run(["for-each-ref", "--format=%(refname:short)%09%(objecttype)", "refs/tags"], ctx.root)
+    out: List[Finding] = []
     for row in proc.stdout.decode("utf-8", "replace").splitlines():
         name, _sep, kind = row.partition("\t")
-        if floor is not None:
-            ver = _version_tuple(name)
-            if ver is not None and ver < floor:
-                continue
-        if re.match(r"^v?\d+\.\d+\.\d+", name) and kind != "tag":
-            out.append(Finding("release-tags", name, 0, "release tag is not annotated", "release-tags"))
-    return [f for f in out if not ctx.allowed(f)]
+        out.extend(_untagged_release(ctx, name, kind))
+    return out
+
+
+def check_pushed_tags(ctx, refs) -> List[Finding]:
+    """Pushed release tags are annotated. `refs` holds (local ref, local sha) pairs; deletions are left out."""
+    out: List[Finding] = []
+    for lref, sha in refs:
+        if not lref.startswith("refs/tags/"):
+            continue
+        kind = gitutil.run(["cat-file", "-t", sha], ctx.root).stdout.decode("utf-8", "replace").strip()
+        out.extend(_untagged_release(ctx, lref[len("refs/tags/"):], kind))
+    return out
 
 
 def check_conventional_commits(ctx) -> List[Finding]:
