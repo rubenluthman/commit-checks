@@ -5,6 +5,8 @@
 - Close the files and sockets that older tests leave open (`tests/test_text_rules.py` and the loader tests), so the verify log prints no `ResourceWarning` and a new warning stands out.
 - Pin types for npm (`package.json` and `package-lock.json`) and Swift packages (`exact:` in `Package.swift`, exact versions in an Xcode project's package references, and the matching `Package.resolved`), so `roll-out` can move Judarn's consumers. A local-path reference gets a note, never an edit. First settle whether SwiftPM and Xcode accept a hand-edited `Package.resolved` whose `originHash` is stale.
 - Tests for two `roll-out` failure paths that have none: a failed `git fetch` with `--push`, and a verify run that hits its time limit.
+- `roll-out` prints one line per repository as it starts and ends it, instead of only a report at the end, so a run that takes hours can be followed.
+- `roll-out` leaves no half-done repository when it is interrupted: an interrupted run leaves its pin edits staged today. Record each repository's starting commit where a later run finds it and restores it first.
 
 ## Icebox
 
