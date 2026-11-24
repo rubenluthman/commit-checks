@@ -15,6 +15,10 @@ PRESETS = {
     "pyproject": r'(?m)^version\s*=\s*"([^"]+)"',
     "plist": r"<key>CFBundleShortVersionString</key>\s*<string>([^<]+)</string>",
 }
+BUILD_PRESETS = {
+    "xcode-build": r'CURRENT_PROJECT_VERSION\s*=\s*"?([0-9][^;"\s]*)"?\s*;|"CURRENT_PROJECT_VERSION"\s*:\s*"([^"]+)"',
+    "plist-build": r"<key>CFBundleVersion</key>\s*<string>([^<]+)</string>",
+}
 HEADING = re.compile(r"^## (?:\[v?(\d+\.\d+\.\d+[^\]\s]*)\]|v?(\d+\.\d+\.\d+[^\s]*))", re.M)
 TYPES = "feat|fix|refactor|perf|test|docs|chore|ci|build|style|revert"
 CONVENTIONAL = re.compile(r"^(?:%s)(?:\([^()\s]+\))?!?: \S" % TYPES)
@@ -48,6 +52,69 @@ def _versions(ctx, source, text: Optional[str] = None) -> Set[str]:
     return found
 
 
+def _build_numbers(build, text: str, where: str) -> Set[tuple]:
+    """The build number as a tuple of integers: one group splits on dots, several groups give one integer each."""
+    kind = build.get("type")
+    pattern = build.get("pattern") if kind == "regex" else BUILD_PRESETS.get(kind or "")
+    if not pattern:
+        raise CheckError("release.build.type must be xcode-build, plist-build or regex")
+    try:
+        compiled = re.compile(pattern)
+    except re.error:
+        raise CheckError("release.build.pattern is not a valid regular expression")
+    found = set()
+    for m in compiled.finditer(text):
+        parts = [g.strip() for g in m.groups() if g is not None and g.strip()]
+        if len(parts) == 1:
+            parts = parts[0].split(".")
+        if not parts or not all(p.isascii() and p.isdigit() for p in parts):
+            raise CheckError("build number in %s is not made of digits: %r" % (where, m.group(0)[:60]))
+        found.add(tuple(int(p) for p in parts))
+    if not found:
+        raise CheckError("no build number found in " + where)
+    return found
+
+
+def _show_build(numbers: tuple) -> str:
+    return "(%s)" % ", ".join(str(n) for n in numbers)
+
+
+def _check_build(ctx, build, version: str) -> List[Finding]:
+    """The build number rises with each release: higher than at the highest release tag."""
+    path = build.get("path")
+    if not path:
+        raise CheckError("release.build needs a path")
+    if path not in set(gitutil.index_paths(ctx.root)):
+        raise CheckError("release.build file is not tracked: " + path)
+    staged = _build_numbers(build, read_index(ctx.root, path), path)
+    if len(staged) != 1:
+        return [Finding("versions", path, 0, "the build number holds more than one value", "versions")]
+    now = next(iter(staged))
+    best = None
+    for name in gitutil.run(["for-each-ref", "--format=%(refname:short)", "refs/tags"], ctx.root).stdout.decode("utf-8", "replace").split():
+        if re.match(r"^v?\d+\.\d+\.\d+$", name):
+            ver = _version_tuple(name)
+            if best is None or ver > best[0]:
+                best = (ver, name)
+    if best is None:
+        return []
+    tag = best[1]
+    old = gitutil.run(["show", "%s:%s" % (tag, path)], ctx.root, ok=(0, 128))
+    if old.returncode != 0:
+        return []
+    before = _build_numbers(build, old.stdout.decode("utf-8", "replace"), "%s at %s" % (path, tag))
+    if len(before) != 1:
+        raise CheckError("the build number holds more than one value in %s at %s" % (path, tag))
+    then = next(iter(before))
+    if now < then:
+        msg = "build number %s is lower than %s at %s" % (_show_build(now), _show_build(then), tag)
+    elif now == then and _version_tuple(version) != best[0]:
+        msg = "build number %s is not higher than %s at %s; raise it for %s" % (_show_build(now), _show_build(then), tag, version)
+    else:
+        return []
+    return [Finding("versions", path, 0, msg, "versions")]
+
+
 def _changelog_top(ctx, path: str) -> Optional[str]:
     if path not in set(gitutil.index_paths(ctx.root)):
         return None
@@ -71,6 +138,8 @@ def check_versions(ctx) -> List[Finding]:
         out.append(Finding("versions", changelog, 0, "CHANGELOG is missing", "versions"))
     elif top != version:
         out.append(Finding("versions", changelog, 0, "top release heading does not match the version %s" % version, "versions"))
+    if conf.get("build"):
+        out.extend(_check_build(ctx, conf["build"], version))
     # A version that changed in this commit must not reuse an existing release tag.
     head = gitutil.run(["show", "HEAD:" + conf["source"]["path"]], ctx.root, ok=(0, 128))
     if head.returncode == 0:

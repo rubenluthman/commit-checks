@@ -161,6 +161,115 @@ class VersionTests(Base):
         self.assertPasses(r.run("pre-commit"))
 
 
+FONT = (r"(?s)<key>versionMajor</key>\s*<integer>(\d+)</integer>.*?"
+        r"<key>versionMinor</key>\s*<integer>(\d+)</integer>")
+
+
+def font(major, minor):
+    return ("<dict><key>versionMajor</key>\n<integer>%s</integer>\n"
+            "<key>versionMinor</key>\n<integer>%s</integer></dict>\n" % (major, minor))
+
+
+class BuildNumberTests(Base):
+    CHECK = "versions"
+
+    def released(self, build, text, version="1.4.1", tag="v1.4.1"):
+        r = self.repo()
+        r.settings(release={"source": {"type": "package-json", "path": "package.json"}, "build": build})
+        r.stage("package.json", json.dumps({"version": version}))
+        r.stage("CHANGELOG.md", changelog(version))
+        r.stage(build["path"], text)
+        r.commit("chore: release")
+        r.git("tag", "-a", tag, "-m", "release")
+        return r
+
+    def bump(self, r, build_text, version="1.4.1"):
+        r.stage("package.json", json.dumps({"version": version}))
+        r.stage("CHANGELOG.md", changelog(version))
+        r.stage("b.txt", build_text)
+
+    def setup_regex(self, old, tag="v1.4.1"):
+        return self.released({"type": "regex", "path": "b.txt", "pattern": r"build=(\S+)"}, "build=%s\n" % old, tag=tag)
+
+    def test_a_higher_build_passes(self):
+        r = self.setup_regex("1.11")
+        self.bump(r, "build=1.12\n", "1.4.2")
+        self.assertPasses(r.run("verify"))
+
+    def test_an_equal_build_with_an_unchanged_version_passes(self):
+        r = self.setup_regex("12")
+        self.bump(r, "build=12\n")
+        self.assertPasses(r.run("verify"))
+
+    def test_an_equal_build_with_a_new_version_fails(self):
+        r = self.setup_regex("1.12")
+        self.bump(r, "build=1.12\n", "1.4.2")
+        self.assertBlocks(r.run("verify"), "build number (1, 12) is not higher than (1, 12) at v1.4.1; raise it for 1.4.2")
+
+    def test_a_lower_build_fails(self):
+        r = self.setup_regex("1.12")
+        self.bump(r, "build=1.3\n", "1.4.2")
+        self.assertBlocks(r.run("verify"), "build number (1, 3) is lower than (1, 12) at v1.4.1")
+
+    def test_no_tag_yet_passes(self):
+        r = self.repo()
+        r.settings(release={"source": {"type": "package-json", "path": "package.json"},
+                            "build": {"type": "regex", "path": "b.txt", "pattern": r"build=(\S+)"}})
+        r.stage("package.json", json.dumps({"version": "1.4.1"}))
+        r.stage("CHANGELOG.md", changelog("1.4.1"))
+        r.stage("b.txt", "build=1\n")
+        self.assertPasses(r.run("verify"))
+
+    def test_a_file_missing_at_the_tag_passes(self):
+        r = self.setup_regex("1")
+        r.git("rm", "-q", "-f", "b.txt")
+        r.commit("chore: drop")
+        r.git("tag", "-a", "v1.4.5", "-m", "release")
+        self.bump(r, "build=1\n", "1.4.6")
+        self.assertPasses(r.run("verify"))
+
+    def test_several_groups_make_a_tuple(self):
+        build = {"type": "regex", "path": "fontinfo.plist", "pattern": FONT}
+        r = self.released(build, font(1, 999))
+        r.stage("package.json", json.dumps({"version": "1.4.2"}))
+        r.stage("CHANGELOG.md", changelog("1.4.2"))
+        r.stage("fontinfo.plist", font(2, 0))
+        self.assertPasses(r.run("verify"))
+        r.stage("fontinfo.plist", font(1, 998))
+        self.assertBlocks(r.run("verify"), "(1, 998) is lower than (1, 999)")
+
+    def test_two_values_in_one_file_fail(self):
+        r = self.setup_regex("1")
+        self.bump(r, "build=1\nbuild=2\n")
+        self.assertBlocks(r.run("verify"), "build number holds more than one value")
+
+    def test_a_non_numeric_build_is_an_error(self):
+        r = self.setup_regex("1")
+        self.bump(r, "build=abc\n")
+        self.assertErrors(r.run("verify"), "not made of digits")
+
+    def test_a_bad_setting_is_an_error(self):
+        r = self.released({"type": "nonsense", "path": "b.txt"}, "x\n")
+        self.assertErrors(r.run("verify"), "release.build.type")
+
+    def test_presets_read_their_samples(self):
+        cases = [
+            ("xcode-build", "p.pbxproj", "\t\tCURRENT_PROJECT_VERSION = %s;\n\t\tCURRENT_PROJECT_VERSION = %s;\n"),
+            ("xcode-build", "project.xcproj", '{"CURRENT_PROJECT_VERSION": "%s", "x": {"CURRENT_PROJECT_VERSION": "%s"}}\n'),
+            ("plist-build", "Info.plist", "<key>CFBundleVersion</key>\n<string>%s</string>\n<key>CFBundleVersion</key><string>%s</string>\n"),
+        ]
+        for kind, path, tpl in cases:
+            with self.subTest(type=kind, path=path):
+                build = {"type": kind, "path": path}
+                r = self.released(build, tpl % (92, 92))
+                r.stage("package.json", json.dumps({"version": "1.4.2"}))
+                r.stage("CHANGELOG.md", changelog("1.4.2"))
+                r.stage(path, tpl % (93, 93))
+                self.assertPasses(r.run("verify"))
+                r.stage(path, tpl % (92, 92))
+                self.assertBlocks(r.run("verify"), "build number (92) is not higher than (92) at v1.4.1")
+
+
 class ReleaseTagTests(Base):
     CHECK = "release-tags"
 

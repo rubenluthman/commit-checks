@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- New optional `release.build` setting: the `versions` check fails when a build number (Xcode, plist or regex, as a tuple of integers) is not higher than at the highest release tag.
+
 ## [0.4.1] - 2026-11-24
 
 - The `versions` check no longer asks for a version bump when the only changes under a `release.code` pattern are files that the `docs_only` setting counts as docs.

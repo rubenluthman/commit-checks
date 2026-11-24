@@ -21,7 +21,7 @@ The point of the package is that a check never quietly passes. A missing tool, t
 | links | Relative Markdown links that do not point at a tracked file or folder, with exact case |
 | decision records | `docs/adr/` records and their index that break the format (title, status line, four headings, no em dash) |
 | house style | Vale alerts, with the pinned style package synced when its pin changes |
-| versions | A CHANGELOG whose top release differs from the version source; code changed under a released tag (files `docs_only` counts as docs never count) |
+| versions | A CHANGELOG whose top release differs from the version source; a build number (`release.build`) not higher than at the highest release tag; code changed under a released tag (files `docs_only` counts as docs never count) |
 | release tags | Lightweight release tags |
 | commit messages | Subjects that are not Conventional Commits |
 | settings keys | Swift apps with a `settings_keys` setting: a stored-setting key that is not registered, a registered key gone from the code, a retired key whose migration is missing |
@@ -65,6 +65,7 @@ Add an entry to `allow` with a rule (a gitleaks rule ID, or a check name such as
 ### Other settings
 
 - `release`: `{"source": {"type": "package-json|xcode|pyproject|plist|regex", "path": "...", "pattern": "..."}, "changelog": "CHANGELOG.md", "code": ["*.swift"]}` turns on the version checks. `code` lists the file patterns that count as code under a released tag (default: every file). Files that `docs_only` counts as docs never count as code, even under a matching pattern; see [Skipping builds on docs changes](#skipping-builds-on-docs-changes).
+- `release.build`: `{"type": "xcode-build|plist-build|regex", "path": "...", "pattern": "..."}` (optional, next to `release.source`) keeps a build counter that rises with each release. `xcode-build` reads `CURRENT_PROJECT_VERSION` in a `.pbxproj` or JSON `project.xcproj`; `plist-build` reads `CFBundleVersion`. A `regex` with one group splits the value on dots (`1.2` is `(1, 2)`); with several groups each group is one integer, so a font uses `(?s)<key>versionMajor</key>\s*<integer>(\d+)</integer>.*?<key>versionMinor</key>\s*<integer>(\d+)</integer>`. The check compares the staged number with the file at the highest `vX.Y.Z` or `X.Y.Z` tag: it fails when the number is lower, or equal while the version differs from the tag's. It passes when there is no tag or the file is new. A value that is not digits, or more than one distinct value, fails.
 - `links_exclude`: path patterns the link check skips.
 - `adr_exempt`: record numbers that keep an old format and skip the heading check.
 - `vale`: `{"globs": ["*.md"], "exclude": []}` picks the files Vale checks. The check runs only when the repository has a `.vale.ini`. A repository with a `CONTRIBUTING.md` gets a notice instead of a failure when Vale is missing locally; CI always fails.
