@@ -3,9 +3,8 @@
 ## Active
 
 - Close the files and sockets that older tests leave open (`tests/test_text_rules.py` and the loader tests), so the verify log prints no `ResourceWarning` and a new warning stands out.
-- A `roll-out` script: given a release tag, it updates the pin (and the loader copy, when the loader changed) in every repository on a list, commits each with the standard subject, skips repositories with uncommitted changes, and lists those whose checks demand a version bump. Pins stay explicit; no repository follows "latest".
-  - Judarn needs it too: pin adapters for npm (`package.json` and `package-lock.json`) and Swift packages (`Package.resolved` and the version requirement), and a hook that can stop before committing, so a release that changes what people see waits for approval.
-  - Not every consumer pins a version. Some load a shared package by local path (for example an Xcode project's `"kind": "local"` package reference), so a release has no pin to update there. The roll-out skips such a repository with a note instead of failing. A later Swift package roll-out reuses these steps with a Swift pin type that covers `exact:` in `Package.swift` and exact versions in an Xcode project's package references.
+- Pin types for npm (`package.json` and `package-lock.json`) and Swift packages (`exact:` in `Package.swift`, exact versions in an Xcode project's package references, and the matching `Package.resolved`), so `roll-out` can move Judarn's consumers. A local-path reference gets a note, never an edit. First settle whether SwiftPM and Xcode accept a hand-edited `Package.resolved` whose `originHash` is stale.
+- Tests for two `roll-out` failure paths that have none: a failed `git fetch` with `--push`, and a verify run that hits its time limit.
 
 ## Icebox
 
