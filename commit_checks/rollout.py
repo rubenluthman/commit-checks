@@ -168,10 +168,12 @@ def process(entry: Dict[str, str], pins: List[Tuple[PinType, Target]], run: Run,
             return Result(name, "skipped", "does not load %s" % " or ".join(p[0].name for p in pins))
         notes = [n for _t, _g, pin in planned for n in pin.notes]
         for _t, _g, pin in planned:
-            if pin.status not in ("current", "local", "update"):
+            if pin.status not in ("current", "local", "manual", "update"):
                 raise CheckError("pin type returned an unknown status")
         updates = [x for x in planned if x[2].status == "update"]
         if not updates:
+            if any(x[2].status == "manual" for x in planned):
+                return Result(name, "manual", "not an exact pin, not edited", notes)
             if any(x[2].status == "local" for x in planned):
                 return Result(name, "local", "local-path reference, not edited", notes)
             return Result(name, "current", ", ".join("%s %s" % (t.name, pin.current) for t, _g, pin in planned), notes)

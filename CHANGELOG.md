@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `roll-out` gains pin types for Judarn: `judarn-npm` (`@judarn/ui` in `package.json`, lockfile made by `npm install --package-lock-only`), `judarn-swift` (`exact:` in `Package.swift` and `Package.resolved`) and `judarn-xcode` (an exact version in an Xcode project and its `Package.resolved`). A range or other non-exact reference is reported as `MANUAL` and never edited; a local-path reference is noted.
+
 ## [0.5.0] - 2026-11-24
 
 - New optional `release.build` setting: the `versions` check fails when a build number (Xcode, plist or regex, as a tuple of integers) is not higher than at the highest release tag.

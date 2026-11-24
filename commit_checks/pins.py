@@ -49,7 +49,7 @@ class Target:
 
 
 class Pin:
-    """What one repository needs. `status` is "current", "update" or "local" (a local-path reference: noted, never edited)."""
+    """What one repository needs. `status` is "current", "update", "local" (a local-path reference) or "manual" (not an exact version): the last two are noted, never edited."""
 
     def __init__(self, status: str, current: str = "", files: Optional[Dict[str, bytes]] = None, notes: Optional[List[str]] = None):
         self.status = status
@@ -246,3 +246,8 @@ class HouseStylePin(PinType):
 
 
 PIN_TYPES: Dict[str, PinType] = {p.name: p for p in (CommitChecksPin(), HouseStylePin())}
+
+
+from .pins_judarn import JUDARN_PIN_TYPES  # noqa: E402  (the module imports this one)
+
+PIN_TYPES.update({p.name: p for p in JUDARN_PIN_TYPES})
