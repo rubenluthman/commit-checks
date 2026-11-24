@@ -6,7 +6,7 @@ import subprocess
 import sys
 from typing import List, Optional
 
-from . import checks, gitutil, rollout, settings
+from . import changes, checks, gitutil, rollout, settings
 from .errors import CheckError, Finding
 
 USAGE = """usage: commit-checks MODE
@@ -20,6 +20,8 @@ USAGE = """usage: commit-checks MODE
   roll-out --list FILE --pin NAME=vX.Y.Z ... [--apply] [--push] [--log-dir DIR] [--approve NAME ...]
                         move every listed consumer to release tags of the shared packages
                         (commit-checks, house-style); dry run unless --apply
+  docs-only             exit 0 when every changed file is docs (a script may skip its build and tests),
+                        1 when code changed or it cannot tell, 2 when it could not run
 """
 ZERO = "0" * 40
 
@@ -56,6 +58,12 @@ def _run(argv: List[str]) -> int:
     mode = argv[0]
     if mode == "roll-out":
         return rollout.main(argv[1:])
+    if mode == "docs-only":
+        root = gitutil.toplevel(os.getcwd())
+        conf = settings.load(root)
+        docs, why = changes.classify(root, conf.data)
+        sys.stdout.write(why + "\n")
+        return 0 if docs else 1
     if mode not in checks.MODES:
         sys.stderr.write(USAGE)
         return 2

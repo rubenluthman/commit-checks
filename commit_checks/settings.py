@@ -9,7 +9,7 @@ from .errors import CheckError
 
 SETTINGS_FILE = ".commit-checks.json"
 VISIBILITIES = ("private", "public", "going-public")
-KNOWN_KEYS = {"version", "commit", "source", "visibility", "email_allow", "allow", "self", "release", "links_exclude", "adr_exempt", "vale", "conventional_commits", "subject_max", "annotated_tags_from", "settings_keys"}
+KNOWN_KEYS = {"version", "commit", "source", "visibility", "email_allow", "allow", "self", "release", "links_exclude", "adr_exempt", "vale", "conventional_commits", "subject_max", "annotated_tags_from", "settings_keys", "docs_only"}
 
 
 class Settings:
@@ -50,7 +50,25 @@ def load(root: str) -> Settings:
             raise CheckError("settings: every allow entry needs rule, path and a written reason")
     if "settings_keys" in data:
         _validate_settings_keys(data["settings_keys"])
+    if "docs_only" in data:
+        _validate_docs_only(data["docs_only"])
     return Settings(data)
+
+
+def _validate_docs_only(conf: Any) -> None:
+    if not isinstance(conf, dict):
+        raise CheckError("settings: docs_only must be an object")
+    unknown = set(conf) - {"paths", "except"}
+    if unknown:
+        raise CheckError("settings: unknown docs_only entries: " + ", ".join(sorted(unknown)))
+    for name, required in (("paths", True), ("except", False)):
+        if name not in conf and not required:
+            continue
+        v = conf.get(name)
+        if not isinstance(v, list) or (required and not v) or not all(isinstance(x, str) and x for x in v):
+            raise CheckError("settings: docs_only.%s must be a %slist of non-empty strings" % (name, "non-empty " if required else ""))
+    if "*" in conf["paths"]:
+        raise CheckError("settings: docs_only.paths must not hold a bare *, which would make every file docs")
 
 
 def _strings(value: Any, label: str, required: bool = False) -> None:

@@ -103,7 +103,25 @@ One regular expression per line, case-insensitive, `#` for comments. The list li
 
 ## Commands
 
-`scripts/commit-checks MODE`, where MODE is `pre-commit`, `commit-msg FILE`, `pre-push`, `verify`, `ci`, `scan-archive FILE...`, `history` or `roll-out`. `scan-archive` checks a tarball or zip before it is published, and also flags source maps and secret file names. `history` scans every commit, message, author address and tag; run it before a repository becomes public. Exit code 0 is a pass, 1 means findings, 2 means the check could not run.
+`scripts/commit-checks MODE`, where MODE is `pre-commit`, `commit-msg FILE`, `pre-push`, `verify`, `ci`, `scan-archive FILE...`, `history`, `docs-only` or `roll-out`. `scan-archive` checks a tarball or zip before it is published, and also flags source maps and secret file names. `history` scans every commit, message, author address and tag; run it before a repository becomes public. Exit code 0 is a pass, 1 means findings, 2 means the check could not run.
+
+## Skipping builds on docs changes
+
+`scripts/commit-checks docs-only` tells a verify script whether a change touches only docs, so it can skip its build and tests. It still runs `commit-checks verify`. A repository opts in with a `docs_only` setting in `.commit-checks.json`:
+
+```json
+"docs_only": {"paths": ["*.md"], "except": ["platforms/*", "docs/DESIGN.md"]}
+```
+
+A path is docs when it matches a `paths` pattern and no `except` pattern. Patterns match the whole repository-relative path (`*` also crosses `/`), never the bare file name, so `README.md` does not cover `src/Button/README.md`. A bare `*` in `paths` is rejected.
+
+The mode looks at staged and unstaged changes, deletions, both sides of a rename, and untracked files that are not ignored. It prints one line saying why. Exit 0: every changed file is docs. Exit 1: code changed, or it cannot prove docs-only (no setting, no commit yet, no changes, `CI` set). Exit 2: it could not run. Without the setting it always exits 1. Every failure lands in the full run:
+
+```sh
+if scripts/commit-checks docs-only; then DOCS_ONLY=1; else DOCS_ONLY=0; fi
+```
+
+The list names docs, not code: a new file type then counts as code, and the check fails closed. A list of code would fail open.
 
 ## Rolling out a release
 

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- New mode `docs-only`: exits 0 when every changed file matches the new `docs_only` setting, so a repository's verify script can skip its build and tests. It exits 1 whenever it cannot prove that.
+
 ## [0.4.0] - 2026-11-24
 
 - New mode `roll-out`: moves every listed repository to release tags of `commit-checks` and `house-style` (`--pin NAME=vX.Y.Z`, repeatable) with one commit per pin, after checking each tag on its package's remote and running the repository's `./scripts/verify_commit.sh` once. Dry run by default; `--push` is opt-in.
