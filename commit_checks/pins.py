@@ -49,13 +49,14 @@ class Target:
 
 
 class Pin:
-    """What one repository needs. `status` is "current", "update", "local" (a local-path reference) or "manual" (not an exact version): the last two are noted, never edited."""
+    """What one repository needs. `status` is "current", "update", "local" (a local-path reference) or "manual" (not an exact version): those two are noted, never edited. "blocked" is an update that cannot be made, with `detail` saying why."""
 
     def __init__(self, status: str, current: str = "", files: Optional[Dict[str, bytes]] = None, notes: Optional[List[str]] = None):
         self.status = status
         self.current = current
         self.files: Dict[str, bytes] = files or {}
         self.notes: List[str] = notes or []
+        self.detail = ""  # why a "blocked" pin cannot be applied
 
     def write(self, root: str) -> None:
         for rel, data in sorted(self.files.items()):

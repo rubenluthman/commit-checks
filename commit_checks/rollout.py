@@ -168,9 +168,9 @@ def process(entry: Dict[str, str], pins: List[Tuple[PinType, Target]], run: Run,
             return Result(name, "skipped", "does not load %s" % " or ".join(p[0].name for p in pins))
         notes = [n for _t, _g, pin in planned for n in pin.notes]
         for _t, _g, pin in planned:
-            if pin.status not in ("current", "local", "manual", "update"):
+            if pin.status not in ("blocked", "current", "local", "manual", "update"):
                 raise CheckError("pin type returned an unknown status")
-        updates = [x for x in planned if x[2].status == "update"]
+        updates = [x for x in planned if x[2].status in ("update", "blocked")]
         if not updates:
             if any(x[2].status == "manual" for x in planned):
                 return Result(name, "manual", "not an exact pin, not edited", notes)
@@ -189,6 +189,9 @@ def process(entry: Dict[str, str], pins: List[Tuple[PinType, Target]], run: Run,
             return Result(name, "skipped", "branch %s already exists" % PR_BRANCH, notes)
         if held is not None:
             return Result(name, "held", held, notes)
+        stuck = [pin.detail for _t, _g, pin in updates if pin.status == "blocked"]
+        if stuck:
+            return Result(name, "blocked", "; ".join(stuck), notes)
         if run.push:
             problem = _sync_problem(root, default)
             if problem:
