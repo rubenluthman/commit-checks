@@ -108,7 +108,7 @@ class RollOutBase(Base):
         return git(self.pkg, "rev-parse", tag + "^{commit}")
 
     def make_consumer(self, name, tag="v1.0.0", loader=LOADER_V1, agents="# Agents\n", hook=None, branch="main",
-                      vale=None, verify=None, checks=True):
+                      vale=None, verify=None, checks=True, packages=None):
         root = os.path.join(self.tmp, "apps", name)
         remote = os.path.join(self.tmp, "remotes", name + ".git")
         os.makedirs(root)
@@ -132,12 +132,14 @@ class RollOutBase(Base):
             write(os.path.join(root, ".git/hooks/pre-commit"), hook, 0o755)
         if branch != "main":
             git(root, "checkout", "-q", "-b", branch)
-        entry = {"name": name, "path": root}
+        if packages is None:
+            packages = (["commit-checks"] if checks else []) + (["house-style"] if vale else [])
+        entry = {"name": name, "path": root, "packages": packages}
         self.consumers.append(entry)
         return root
 
     def write_list(self, extra=None, consumers=None):
-        data = {"consumers": [{"name": c["name"], "path": os.path.relpath(c["path"], self.tmp)}
+        data = {"consumers": [{"name": c["name"], "path": os.path.relpath(c["path"], self.tmp), "packages": c["packages"]}
                               for c in (self.consumers if consumers is None else consumers)]}
         data.update(extra or {})
         path = os.path.join(self.tmp, "list.json")
@@ -286,12 +288,13 @@ class TestRollOut(RollOutBase):
         other = os.path.join(self.tmp, "apps", "plain")
         os.makedirs(other)
         git(other, "init", "-q", "-b", "main")
-        self.consumers.append({"name": "plain", "path": other})
-        self.consumers.append({"name": "gone", "path": os.path.join(self.tmp, "apps", "gone")})
+        self.consumers.append({"name": "plain", "path": other, "packages": ["commit-checks"]})
+        self.consumers.append({"name": "gone", "path": os.path.join(self.tmp, "apps", "gone"), "packages": ["commit-checks"]})
         proc = self.roll("v1.1.0", "--apply")
         self.assertBlocks(proc)
-        self.assertIn("BLOCKED", proc.stdout)
-        self.assertIn("SKIPPED", proc.stdout)
+        self.assertIn("BLOCKED        gone: folder not found", proc.stdout)
+        self.assertIn("BLOCKED        plain: listed as loading commit-checks, but no pin found", proc.stdout)
+        self.assertNotIn("SKIPPED", proc.stdout)
         self.assertIn("UPDATED", proc.stdout)  # the others still move
 
     def test_tag_missing_on_remote_edits_nothing(self):
@@ -335,7 +338,7 @@ class TestGate(RollOutBase):
         write(os.path.join(self.tmp, "gate.json"), raw if raw is not None else json.dumps(decisions))
         if fail:
             write(os.path.join(self.tmp, "gate-fails"), "")
-        return self.write_list({"gate": [sys.executable, "gate.py", "gate.json", "{tag}"]})
+        return self.write_list({"gates": {"commit-checks": [sys.executable, "gate.py", "gate.json", "{tag}"]}})
 
     def two(self):
         return self.make_consumer("alpha"), self.make_consumer("beta")
@@ -461,19 +464,19 @@ class TestHouseStyle(RollOutBase):
         self.assertEqual(git(root, "log", "-1", "--format=%s"), "ci: load the house style at v0.3.6")
         self.assertEqual(git(root, "show", "--name-only", "--format=", "HEAD"), ".vale.ini")
 
-    def test_vale_ini_without_a_house_style_line_is_not_a_consumer(self):
-        root = self.make_consumer("alpha", checks=False)
+    def test_vale_ini_without_a_house_style_line_is_listed_but_not_found(self):
+        root = self.make_consumer("alpha", checks=False, packages=["house-style"])
         write(os.path.join(root, ".vale.ini"), "StylesPath = styles\nMinAlertLevel = warning\n")
         git(root, "add", "-A")
         git(root, "commit", "-q", "-m", "chore: vale")
         head = self.head(root)
         proc = self.roll(None, "--apply", pins={"house-style": "v0.3.6"})
         self.assertBlocks(proc)
-        self.assertIn("SKIPPED", proc.stdout)
+        self.assertIn("BLOCKED        alpha: listed as loading house-style, but no pin found", proc.stdout)
         self.assertUntouched(root, head)
 
     def test_other_package_url_is_not_edited(self):
-        root = self.make_consumer("alpha", checks=False)
+        root = self.make_consumer("alpha", checks=False, packages=["house-style"])
         write(os.path.join(root, ".vale.ini"), "Packages = https://github.com/acme/other-style/releases/download/v0.3.4/Other.zip\n")
         git(root, "add", "-A")
         git(root, "commit", "-q", "-m", "chore: vale")
@@ -567,7 +570,7 @@ class TestSeveralPins(RollOutBase):
         self.make_consumer("alpha")
         write(os.path.join(self.tmp, "gate.py"), GATE)
         write(os.path.join(self.tmp, "gate.json"), "{}")
-        lst = self.write_list({"gate": [sys.executable, "gate.py", "gate.json", "{tag}"]})
+        lst = self.write_list({"gates": {"commit-checks": [sys.executable, "gate.py", "gate.json", "{tag}"]}})
         self.assertErrors(self.roll(None, list_path=lst, pins=self.BOTH), "exactly one --pin")
 
     def test_bad_pin_arguments_are_errors(self):

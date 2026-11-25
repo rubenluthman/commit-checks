@@ -104,7 +104,7 @@ One regular expression per line, case-insensitive, `#` for comments. The list li
 
 ## Commands
 
-`scripts/commit-checks MODE`, where MODE is `pre-commit`, `commit-msg FILE`, `pre-push`, `verify`, `ci`, `scan-archive FILE...`, `history`, `docs-only` or `roll-out`. `scan-archive` checks a tarball or zip before it is published, and also flags source maps and secret file names. `history` scans every commit, message, author address and tag; run it before a repository becomes public. Exit code 0 is a pass, 1 means findings, 2 means the check could not run.
+`scripts/commit-checks MODE`, where MODE is `pre-commit`, `commit-msg FILE`, `pre-push`, `verify`, `ci`, `scan-archive FILE...`, `history`, `docs-only`, `pins` or `roll-out`. `scan-archive` checks a tarball or zip before it is published, and also flags source maps and secret file names. `history` scans every commit, message, author address and tag; run it before a repository becomes public. Exit code 0 is a pass, 1 means findings, 2 means the check could not run.
 
 ## Skipping builds on docs changes
 
@@ -133,7 +133,7 @@ scripts/commit-checks roll-out --list FILE --pin NAME=vX.Y.Z [--pin NAME=vX.Y.Z 
 ```
 
 - Without `--apply` it only reports. `--apply` edits, verifies and commits. `--push` (only with `--apply`) also pushes.
-- `--pin` is repeatable; each name picks a pin type. `commit-checks` sets `version` and `commit` in `.commit-checks.json` without touching the file's other content, and replaces `scripts/commit-checks` with the target's `templates/loader.py` when they differ; it commits as `ci: load the shared commit checks at vX.Y.Z`. Changed `templates/githooks/*`, `templates/install-hooks.sh` or `templates/workflows/*` between the consumer's old release and the target are reported, never copied. `house-style` rewrites only the tag in the `Packages` line of `.vale.ini` that points at `https://github.com/<owner>/house-style/releases/download/vX.Y.Z/HouseStyle.zip`; it commits as `ci: load the house style at vX.Y.Z`. A `.vale.ini` without such a line is not a consumer.
+- `--pin` is repeatable; each name picks a pin type. `commit-checks` sets `version` and `commit` in `.commit-checks.json` without touching the file's other content, and replaces `scripts/commit-checks` with the target's `templates/loader.py` when they differ; it commits as `ci: load the shared commit checks at vX.Y.Z`. Changed `templates/githooks/*`, `templates/install-hooks.sh` or `templates/workflows/*` between the consumer's old release and the target are reported, never copied. `house-style` rewrites only the tag in the `Packages` line of `.vale.ini` that points at `https://github.com/<owner>/house-style/releases/download/vX.Y.Z/HouseStyle.zip`; it commits as `ci: load the house style at vX.Y.Z`. A `.vale.ini` without such a line holds no house-style pin.
 - `judarn` moves the Judarn design system (`--pin judarn=vX.Y.Z`). It reads the release from a local clone (`JUDARN_PATH` or `git config --global judarn.path`) and checks the tag on its `origin` like the others. Each repository gets every form it matches, in one commit: `build: pin Judarn at vX.Y.Z`.
   - npm: sets an exact `@judarn/ui` version in the root `package.json` and runs `npm install --package-lock-only --save-exact --ignore-scripts` for the lock, and refuses if `npm` rewrites `package.json`. It asks npm whether the version is published; if not, that repository is `BLOCKED` and not edited (after the gate, so a held repository still shows as held), and the others go on.
   - Swift manifest: replaces the version in `exact: "…"` (or `.exact("…")`) of the Judarn `.package(` call in the root `Package.swift`, and the judarn pin in the root `Package.resolved`.
@@ -141,14 +141,39 @@ scripts/commit-checks roll-out --list FILE --pin NAME=vX.Y.Z [--pin NAME=vX.Y.Z 
   - A reference that is not an exact version (`from:`, a wider range, a branch) is reported as `MANUAL` and never edited; the run then exits 1. A local-path reference is noted as `LOCAL`. A missing `Package.resolved`, or one without a judarn pin, is noted and not created.
   - **Stale `originHash`:** the Swift types edit `Package.resolved` by hand and leave `originHash` as it is. Checked on 2026-11-24 with a Package.swift or project edit plus a hand-edited `Package.resolved` (Xcode 27.2): `swift package resolve` and `xcodebuild -resolvePackageDependencies` both accepted the file, resolved the new version and left it byte-for-byte unchanged. Neither needs the resolver run by `roll-out`; the consumer's own verify run still resolves the packages.
 - Each package comes from a local clone: `COMMIT_CHECKS_PATH` or `git config --global commit-checks.path` (this source tree is the last fallback), and `HOUSE_STYLE_PATH` or `git config --global house-style.path`. Before any edit every tag must exist in its clone and on that clone's `origin`, and point at the same commit; otherwise the command exits 2 and touches nothing.
-- The list file is JSON and stays outside the repository: `{"scanRoot": "<folder>", "gate": ["<command>", "{tag}"], "consumers": [{"name": "...", "path": "..."}]}`. `scanRoot` and `gate` are optional; relative paths resolve against the list file's folder. A repository up to two folders below `scanRoot` that loads any given package but is not listed is reported as `UNLISTED` and makes the run exit 1.
+- The list file is JSON and stays outside the repository: `{"scanRoot": "<folder>", "gates": {"<package>": ["<command>", "{tag}", "{pins}"]}, "consumers": [{"name": "...", "path": "...", "packages": ["commit-checks", "judarn"]}]}`. `scanRoot` and `gates` are optional; relative paths resolve against the list file's folder. A repository up to two folders below `scanRoot` that loads any given package but is not listed is reported as `UNLISTED` and makes the run exit 1.
+- `packages` is required on every entry: the packages that repository loads (`commit-checks`, `house-style`, `judarn`). `roll-out` works only on entries that name a requested package; one line counts the others, and they do not change the exit code. The list is checked both ways: an entry that names a package but has no pin for it is `BLOCKED` ("listed as loading X, but no pin found"), and so is a repository that holds a pin for a requested package its entry does not name. A package's own clone (the local clone a tag comes from) is never a consumer of itself.
+- Judarn pins are read in every form, not only the ones `roll-out` edits: the repository folder plus two folder levels below it (skipping dot folders, `.build`, `build`, `DerivedData`, `node_modules`, `scripts` and `Pods`), only files Git tracks, any host over HTTPS or SSH, `package.json` (all four dependency groups) with its lockfile, `Package.swift`, `project.yml`, `project.xcproj`, `project.pbxproj`, and every `Package.resolved` copy, each paired with its own manifest or project. A form `roll-out` cannot edit (a subfolder, `project.yml`, a stale workspace copy of `Package.resolved`, a non-GitHub URL, a range, a branch or a revision) is `MANUAL` or `LOCAL` with its file named, never skipped. Two Judarn references in one manifest block the repository.
 - A consumer is skipped, without edits, when it has any uncommitted change or is not on its default branch. With `--push`, after a `git fetch`, it is also skipped when its default branch is ahead of, behind or diverged from `origin`, so the command never pushes someone else's work. A consumer already on every target is `CURRENT`.
 - A project whose `AGENTS.md` contains `Collaborative: use branches and pull requests.` gets a pull request. `--apply` commits on a new branch `ci/shared-pins` cut from the default branch and switches back; `--push` pushes that branch and runs `gh pr create`. The command never merges.
 - With `--apply`, after the pins are written and staged, it runs `./scripts/verify_commit.sh` once from the repository root and saves the output in `--log-dir` (default: a new temporary folder, printed). If it fails, every edit is undone and the consumer is `CHECKS FAIL`, or `NEEDS A VERSION BUMP` when the output says "bump the version"; the last lines and the log path are shown. A repository without the script is verified by its commit hooks only, with a note. The command takes no lock: a consumer's script queues its own heavy steps.
-- The gate takes exactly one `--pin` (more is an error). It runs once, with `{tag}` replaced, and prints JSON: `{"<name>": {"decision": "go" | "hold", "reason": "..."}}`. A held consumer is not edited unless named with `--approve`. A gate that fails, prints bad JSON or leaves a consumer out holds it.
+- A run that includes a gated package takes exactly one `--pin` (more is an error). The gate comes from `gates` and runs once, with `{tag}` replaced by the tag and `{pins}` by the path of a temporary file holding the `pins --json` report for exactly the consumers `roll-out` is about to act on; the file is deleted afterward. The gate prints JSON: `{"<name>": {"decision": "go" | "hold", "reason": "..."}}`. A held consumer is not edited unless named with `--approve`. A gate that fails, prints bad JSON or leaves a consumer out holds it. The old single `gate` key is an error (exit 2): use `gates`, keyed by package.
 - Each commit runs the consumer's hooks. If one fails, every edit and earlier commit of the run is undone and the hook's output is shown. A consumer counts as updated only after commits that contain the new pins.
 
 Exit code 0 means every consumer is current, updated (or would be, in a dry run) or a local-path reference, and no unlisted consumer exists; 1 means some consumer was skipped, held, blocked or failed its checks, or one is unlisted; 2 means the command could not run.
+
+## Reading pins
+
+```
+scripts/commit-checks pins --list FILE --package NAME [--package NAME ...] [--json]
+```
+
+Reads which release of each package every listed repository pins, from the same list as `roll-out`. It edits nothing, needs no tag and uses no network. The text form shows each repository's version and problems. With `--json` it prints:
+
+```
+{"format": 1,
+ "consumers": [{"name": "...", "path": "/abs/path", "exists": true,
+   "packages": {"judarn": {"declared": true, "detected": true,
+     "forms": [{"kind": "npm | swift | settings | vale", "file": "App.xcodeproj/project.xcproj",
+                "requirement": {"type": "exact | range | upToNextMinor | upToNextMajor | branch | revision | local | unknown", "version": "1.0.0", "max": "1.0.1"},
+                "resolved": {"file": "...", "version": "1.0.0", "revision": "...", "branch": null},
+                "editable": true}],
+     "version": "1.0.0",
+     "problems": ["resolved 0.9.0 differs from exact 1.0.0 (Package.swift)"]}}}],
+ "unlisted": [{"path": "/abs/path", "loads": ["judarn"]}]}
+```
+
+`requirement` and `resolved` are `null` when a form has none (a lockfile with no manifest). `editable` says whether `roll-out` can edit every file of the form. `version` is the one version all forms agree on, else `null`. `problems` holds each mismatch (a resolved version or lockfile that differs from its requirement, a range where an exact version is expected, a local path, two references in one file, forms that disagree), `listed as loading X, but no pin found` and `loads X, but the list does not name it`. Exit code 0 means the report is complete, whatever it finds; 2 means it could not run (an unreadable list, an unknown package).
 
 ## Tests
 

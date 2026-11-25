@@ -72,6 +72,40 @@ class Pin:
         return True
 
 
+class Reading:
+    """What one repository holds of one package: every pin form found, and the problems worth showing.
+
+    A form is a dict: kind, file, requirement ({type, version, max} or None), resolved ({file, version,
+    revision, branch} or None) and editable (whether `roll-out` can edit every file of it). Keys that start
+    with an underscore are for the reader and never reach a report.
+    """
+
+    def __init__(self, forms: Optional[List[dict]] = None, problems: Optional[List[str]] = None):
+        self.forms: List[dict] = [] if forms is None else forms
+        self.problems: List[str] = [] if problems is None else problems
+
+    @property
+    def version(self) -> Optional[str]:
+        """The one version every form agrees on; None when there is none or the forms differ."""
+        seen = set()
+        for form in self.forms:
+            resolved, req = form.get("resolved"), form.get("requirement")
+            version = (resolved or {}).get("version") or (req["version"] if req and req.get("type") == "exact" else None)
+            if version:
+                seen.add(version)
+        return seen.pop() if len(seen) == 1 else None
+
+    def public_forms(self) -> List[dict]:
+        return [{k: v for k, v in f.items() if not k.startswith("_")} for f in self.forms]
+
+
+def form(kind: str, file: str, requirement: Optional[dict] = None, resolved: Optional[dict] = None,
+         editable: bool = False, **private) -> dict:
+    out = {"kind": kind, "file": file, "requirement": requirement, "resolved": resolved, "editable": editable}
+    out.update(private)
+    return out
+
+
 class PinType:
     name = ""
 
@@ -79,8 +113,12 @@ class PinType:
         """The commit subject for moving this pin to `tag`."""
         raise NotImplementedError
 
-    def detect(self, root: str) -> bool:
+    def read(self, root: str) -> Reading:
+        """Every form in which `root` pins this package. Edits nothing, reads only what Git tracks."""
         raise NotImplementedError
+
+    def detect(self, root: str) -> bool:
+        return bool(self.read(root).forms)
 
     def resolve_target(self, tag: str) -> Target:
         """Return the verified release, or raise CheckError (the command then edits nothing)."""
@@ -146,15 +184,21 @@ class CommitChecksPin(PinType):
     name = "commit-checks"
     SETTINGS = ".commit-checks.json"
 
-    def detect(self, root: str) -> bool:
+    def read(self, root: str) -> Reading:
         path = os.path.join(root, self.SETTINGS)
         if not os.path.isfile(path):
-            return False
+            return Reading()
         try:
             data = _read_json(path)
         except CheckError:
-            return False
-        return isinstance(data, dict) and "version" in data and "commit" in data
+            return Reading()
+        if not (isinstance(data, dict) and "version" in data and "commit" in data):
+            return Reading()
+        tag, commit = data.get("version"), data.get("commit")
+        resolved = {"file": self.SETTINGS, "version": tag if isinstance(tag, str) else None,
+                    "revision": commit if isinstance(commit, str) else None, "branch": None}
+        req = {"type": "exact", "version": resolved["version"]}
+        return Reading([form("settings", self.SETTINGS, req, resolved, True)])
 
     def subject(self, tag: str) -> str:
         return "ci: load the shared commit checks at " + tag
@@ -223,9 +267,12 @@ class HouseStylePin(PinType):
         with open(path, encoding="utf-8", errors="replace", newline="") as fh:
             return fh.read()
 
-    def detect(self, root: str) -> bool:
+    def read(self, root: str) -> Reading:
         text = self._text(root)
-        return text is not None and HOUSE_LINE.search(text) is not None
+        found = HOUSE_LINE.search(text) if text is not None else None
+        if not found:
+            return Reading()
+        return Reading([form("vale", self.FILE, {"type": "exact", "version": found.group("tag")}, None, True)])
 
     def resolve_target(self, tag: str) -> Target:
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

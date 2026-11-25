@@ -3,6 +3,9 @@
 Dry run unless --apply. Exit 0: every consumer is current, updated or a local-path reference.
 Exit 1: some consumer was skipped, held, blocked or failed its checks, or a repository that loads
 a package is missing from the list. Exit 2: the command could not run.
+
+Only consumers whose `packages` name a requested package are worked on. The list is checked both
+ways: a listed package with no pin found, and a pin the list does not name, both block.
 """
 from __future__ import annotations
 
@@ -13,10 +16,12 @@ import re
 import subprocess
 import sys
 import tempfile
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from . import gitutil
 from .errors import CheckError
+from . import pinreport
+from .consumerlist import Consumers, load_list, not_found_text, not_listed_text
 from .pins import PIN_TYPES, Pin, PinType, Target
 
 OK = {"updated", "would update", "current", "local"}
@@ -36,52 +41,23 @@ class Result:
         self.notes = notes or []
 
 
-class Consumers:
-    def __init__(self, base: str, entries: List[Dict[str, str]], scan_root: Optional[str], gate: Optional[List[str]]):
-        self.base = base
-        self.entries = entries
-        self.scan_root = scan_root
-        self.gate = gate
-
-
-def load_list(path: str) -> Consumers:
+def run_gate(consumers: Consumers, package: str, tag: str, report: dict) -> Dict[str, Dict[str, str]]:
+    """Run the package's gate once. `{pins}` becomes a temporary file holding the pin report for exactly the
+    consumers roll-out is about to act on. Any failure raises CheckError; the caller then holds every consumer."""
+    handle, pins_file = tempfile.mkstemp(prefix="commit-checks-pins-", suffix=".json")
     try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError) as exc:
-        raise CheckError("cannot read the consumer list: %s" % exc)
-    if not isinstance(data, dict) or not isinstance(data.get("consumers"), list):
-        raise CheckError("the consumer list needs a consumers array")
-    base = os.path.dirname(os.path.abspath(path))
-
-    def resolve(p: str) -> str:
-        return os.path.normpath(os.path.join(base, os.path.expanduser(p)))
-
-    entries, seen = [], set()
-    for item in data["consumers"]:
-        if not (isinstance(item, dict) and isinstance(item.get("name"), str) and isinstance(item.get("path"), str)
-                and item["name"] and item["path"]):
-            raise CheckError("every consumer needs a name and a path")
-        if item["name"] in seen:
-            raise CheckError("consumer listed twice: " + item["name"])
-        seen.add(item["name"])
-        entries.append({"name": item["name"], "path": resolve(item["path"])})
-    scan = data.get("scanRoot")
-    if scan is not None and not (isinstance(scan, str) and scan):
-        raise CheckError("scanRoot must be a folder name")
-    gate = data.get("gate")
-    if gate is not None and not (isinstance(gate, list) and gate and all(isinstance(a, str) for a in gate)):
-        raise CheckError("gate must be a list of command arguments")
-    return Consumers(base, entries, resolve(scan) if scan else None, gate)
-
-
-def run_gate(consumers: Consumers, tag: str) -> Dict[str, Dict[str, str]]:
-    """Run the gate once. Any failure raises CheckError; the caller then holds every consumer."""
-    argv = [a.replace("{tag}", tag) for a in consumers.gate or []]
-    try:
-        proc = subprocess.run(argv, cwd=consumers.base, capture_output=True, timeout=600)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise CheckError("gate failed to run: %s" % exc)
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, indent=2)
+        argv = [a.replace("{tag}", tag).replace("{pins}", pins_file) for a in consumers.gates[package]]
+        try:
+            proc = subprocess.run(argv, cwd=consumers.base, capture_output=True, timeout=600)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise CheckError("gate failed to run: %s" % exc)
+    finally:
+        try:
+            os.unlink(pins_file)
+        except OSError:
+            pass
     if proc.returncode != 0:
         raise CheckError("gate exited with %d" % proc.returncode)
     try:
@@ -153,19 +129,23 @@ class Run:
         self.log_dir = log_dir
 
 
-def process(entry: Dict[str, str], pins: List[Tuple[PinType, Target]], run: Run, held: Optional[str]) -> Result:
+def undeclared(root: str, others: List[PinType]) -> List[str]:
+    """Packages the repository pins that its list entry does not name."""
+    return [not_listed_text(p.name) for p in others if p.detect(root)]
+
+
+def process(entry: Dict[str, str], pins: List[Tuple[PinType, Target]], run: Run, held: Optional[str],
+            others: Optional[List[PinType]] = None) -> Result:
     name, root = entry["name"], entry["path"]
     if not os.path.isdir(root):
         return Result(name, "blocked", "folder not found")
     try:
         if os.path.realpath(gitutil.toplevel(root)) != os.path.realpath(root):
             return Result(name, "blocked", "not the root of a git repository")
-        planned: List[Planned] = []
-        for ptype, target in pins:
-            if ptype.detect(root):
-                planned.append((ptype, target, ptype.inspect(root, target)))
-        if not planned:
-            return Result(name, "skipped", "does not load %s" % " or ".join(p[0].name for p in pins))
+        problems = [not_found_text(p.name) for p, _t in pins if not p.detect(root)] + undeclared(root, others or [])
+        if problems:
+            return Result(name, "blocked", "; ".join(problems))
+        planned: List[Planned] = [(ptype, target, ptype.inspect(root, target)) for ptype, target in pins]
         notes = [n for _t, _g, pin in planned for n in pin.notes]
         for _t, _g, pin in planned:
             if pin.status not in ("blocked", "current", "local", "manual", "update"):
@@ -312,28 +292,6 @@ def _open_pull_request(name: str, root: str, updates: List[Planned], default: st
     return Result(name, "updated", "%s, pull request opened: %s" % (verb, _tail(text, 1)), notes)
 
 
-def find_unlisted(consumers: Consumers, ptypes: List[PinType]) -> List[Tuple[str, List[str]]]:
-    """Repositories under scanRoot (two folder levels deep) that load a package but are not listed."""
-    if not consumers.scan_root:
-        return []
-    if not os.path.isdir(consumers.scan_root):
-        raise CheckError("scanRoot is not a folder")
-    listed: Set[str] = {os.path.realpath(e["path"]) for e in consumers.entries}
-    found = []
-
-    def subdirs(path: str) -> List[str]:
-        return [os.path.join(path, n) for n in sorted(os.listdir(path))
-                if not n.startswith(".") and n != "node_modules" and os.path.isdir(os.path.join(path, n))]
-
-    for first in subdirs(consumers.scan_root):
-        for cand in [first] + subdirs(first):
-            if os.path.exists(os.path.join(cand, ".git")) and os.path.realpath(cand) not in listed:
-                loads = [p.name for p in ptypes if p.detect(cand)]
-                if loads:
-                    found.append((os.path.relpath(cand, consumers.scan_root), loads))
-    return found
-
-
 def parse(argv: List[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="commit-checks roll-out", description="Move every consumer of the shared packages to release tags (dry run unless --apply).")
     p.add_argument("--list", required=True, help="private JSON file naming the consumers")
@@ -357,27 +315,43 @@ def parse(argv: List[str]) -> argparse.Namespace:
     return ns
 
 
+def _is_own_clone(entry: Dict[str, str], target: Target) -> bool:
+    """A package's own clone is never a consumer of itself."""
+    return os.path.realpath(entry["path"]) == os.path.realpath(target.repo)
+
+
 def main(argv: List[str]) -> int:
     ns = parse(argv)
     if ns.push and not ns.apply:
         raise CheckError("--push needs --apply")
     consumers = load_list(ns.list)
-    if consumers.gate and len(ns.pins) != 1:
-        raise CheckError("a list with a gate takes exactly one --pin")
+    gated = [n for n in ns.pins if n in consumers.gates]
+    if gated and len(ns.pins) != 1:
+        raise CheckError("a run that includes a gated package takes exactly one --pin")
     names = {e["name"] for e in consumers.entries}
     for n in ns.approve:
         if n not in names:
             raise CheckError("--approve names a consumer that is not listed: " + n)
     # Every release is confirmed on its remote before anything is touched.
     pins = [(PIN_TYPES[n], PIN_TYPES[n].resolve_target(tag)) for n, tag in sorted(ns.pins.items())]
+    unlisted = pinreport.find_unlisted(consumers, [p[0] for p in pins])
+
+    plan = []  # (entry, pins to work on, packages the entry does not name)
+    for entry in consumers.entries:
+        mine = [(p, t) for p, t in pins if not _is_own_clone(entry, t)]
+        plan.append((entry, [(p, t) for p, t in mine if p.name in entry["packages"]],
+                     [p for p, _t in mine if p.name not in entry["packages"]]))
+    acting = [entry for entry, active, _o in plan if active]
+
     decisions: Dict[str, Dict[str, str]] = {}
     gate_error = ""
-    if consumers.gate:
+    if gated:
+        ptype, target = pins[0]
         try:
-            decisions = run_gate(consumers, pins[0][1].tag)
+            report = pinreport.build(consumers, [ptype], acting, unlisted)
+            decisions = run_gate(consumers, ptype.name, target.tag, report)
         except CheckError as exc:
             gate_error = str(exc)
-    unlisted = find_unlisted(consumers, [p[0] for p in pins])
     log_dir = ""
     if ns.apply:
         log_dir = os.path.abspath(ns.log_dir) if ns.log_dir else tempfile.mkdtemp(prefix="commit-checks-roll-out-")
@@ -389,9 +363,17 @@ def main(argv: List[str]) -> int:
     if log_dir:
         out.write("verification logs: %s\n" % log_dir)
     results = []
-    for entry in consumers.entries:
+    idle = 0
+    for entry, active, others in plan:
+        if not active:
+            problems = undeclared(entry["path"], others) if os.path.isdir(entry["path"]) else []
+            if problems:
+                results.append(Result(entry["name"], "blocked", "; ".join(problems)))
+            else:
+                idle += 1
+            continue
         held = None
-        if consumers.gate and entry["name"] not in ns.approve:
+        if gated and entry["name"] not in ns.approve:
             if gate_error:
                 held = gate_error
             else:
@@ -400,15 +382,17 @@ def main(argv: List[str]) -> int:
                     held = "the gate did not give a go or hold for it"
                 elif d["decision"] == "hold":
                     held = "gate: " + str(d.get("reason", "no reason given"))
-        results.append(process(entry, pins, run, held))
+        results.append(process(entry, active, run, held, others))
 
     for r in results:
         out.write("%-14s %s%s\n" % (r.status.upper(), r.name, (": " + r.detail) if r.detail else ""))
         for note in r.notes:
             for line in note.splitlines():
                 out.write("    " + line + "\n")
-    for rel, loads in unlisted:
-        out.write("UNLISTED       %s loads %s but is not in the list\n" % (rel, ", ".join(loads)))
+    for path, loads in unlisted:
+        out.write("UNLISTED       %s loads %s but is not in the list\n" % (os.path.relpath(path, consumers.scan_root), ", ".join(loads)))
     bad = [r for r in results if r.status not in OK]
+    if idle:
+        out.write("%d listed %s not name %s; not touched.\n" % (idle, "repository does" if idle == 1 else "repositories do", " or ".join(sorted(ns.pins))))
     out.write("%d consumer(s); %d need attention.\n" % (len(results), len(bad) + len(unlisted)))
     return 1 if bad or unlisted else 0

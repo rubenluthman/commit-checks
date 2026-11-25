@@ -41,7 +41,7 @@ class JudarnBase(RollOutBase):
         self.sha = {t: self.tag_commit(t) for t in ("v1.0.0", "v1.0.1", "v1.1.0")}
 
     def app(self, name, files):
-        root = self.make_consumer(name, checks=False)
+        root = self.make_consumer(name, checks=False, packages=["judarn"])
         for rel, text in files.items():
             write(os.path.join(root, rel), text)
         git(root, "add", "-A")
@@ -125,9 +125,11 @@ class TestNpmPin(JudarnBase):
         self.assertIn("BLOCKED", proc.stdout)
         self.assertUntouched(root, head)
 
-    def test_no_package_json_entry_is_not_a_consumer(self):
+    def test_no_package_json_entry_is_listed_but_not_found(self):
         self.app("web", {"package.json": '{"dependencies": {"other": "1.0.0"}}\n'})
-        self.assertIn("SKIPPED", self.go("judarn", "v1.1.0").stdout)
+        out = self.go("judarn", "v1.1.0").stdout
+        self.assertIn("listed as loading judarn, but no pin found", out)
+        self.assertNotIn("SKIPPED", out)
 
 
 class TestSwiftManifestPin(JudarnBase):
@@ -186,9 +188,12 @@ class TestSwiftManifestPin(JudarnBase):
         self.assertIn("CURRENT", proc.stdout)
         self.assertUntouched(root, head)
 
-    def test_unbalanced_manifest_is_not_a_consumer(self):
+    def test_unbalanced_manifest_is_manual_with_the_file_named(self):
         self.app("swiftapp", {"Package.swift": '.package(url: "https://github.com/acme/judarn", exact: "1.0.0"\n'})
-        self.assertIn("SKIPPED", self.go("judarn", "v1.1.0").stdout)
+        out = self.go("judarn", "v1.1.0").stdout
+        self.assertIn("MANUAL", out)
+        self.assertIn("Package.swift", out)
+        self.assertNotIn("SKIPPED", out)
 
 
 class TestXcodeProjectPin(JudarnBase):
@@ -272,7 +277,7 @@ class TestCombined(JudarnBase):
         write(os.path.join(self.tmp, "gate.json"), json.dumps({"web": {"decision": "hold", "reason": "visible change"}}))
         gate = os.path.join(self.tmp, "gate.py")
         write(gate, "import os, sys\nsys.stdout.write(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate.json')).read())\n")
-        lst = self.write_list({"gate": [sys.executable, gate, "gate.json", "{tag}"]})
+        lst = self.write_list({"gates": {"judarn": [sys.executable, gate, "gate.json", "{tag}"]}})
         env = {"JUDARN_PATH": self.pkg, "NPM_LOG": self.log, "NPM_PUBLISHED": "1.0.1",
                "PATH": self.bin + os.pathsep + os.environ["PATH"]}
         proc = self.roll(None, list_path=lst, pins={"judarn": "v1.1.0"}, env=env)
