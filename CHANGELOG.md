@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-26
+
 - **Breaking:** the `roll-out` list needs `packages` on every entry, and `gate` is now `gates`, keyed by package. `roll-out` works only on entries that name a requested package and blocks an entry that names a package with no pin, or holds a pin it does not name. In a gate command, `{pins}` is replaced by a file holding the pin report.
 - New mode `pins`: reads which release of each package every listed repository pins, as text or JSON, without editing anything or touching the network.
 - Judarn pins are found in more forms: subfolders, `project.yml`, SSH and other hosts, branch and revision pins, workspace copies of `Package.resolved`. Forms `roll-out` cannot edit are reported as `MANUAL` or `LOCAL` with the file named.
