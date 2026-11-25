@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-25
+
 - `pre-push` rejects pushing a release tag that is not annotated, honoring `annotated_tags_from` and `allow` entries for `release-tags`.
 
 ## [0.5.1] - 2026-11-24
