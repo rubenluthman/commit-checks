@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 from support import Base, env_for
 
@@ -17,6 +18,9 @@ VERIFY_OK = ("#!/bin/sh\necho run >> .git/verify-runs\ngit diff --cached --name-
              "cat .commit-checks.json .vale.ini > .git/verify-saw 2>/dev/null\nexit 0\n")
 VERIFY_BUMP = '#!/bin/sh\necho "code changed under the released tag; bump the version"\nexit 1\n'
 VERIFY_FAIL = '#!/bin/sh\necho "test suite exploded"\nexit 1\n'
+# Starts a background child, as a real verify run does through heavy-run, and records its pid.
+VERIFY_BG_HANG = '#!/bin/sh\nsleep 300 &\necho $! > .git/bg-pid\necho started > .git/verify-started\nwait\n'
+VERIFY_BG_LEAVE = '#!/bin/sh\nsleep 300 &\necho $! > .git/bg-pid\nexit 0\n'
 GH_STUB = '#!/bin/sh\necho "$@" >> "$GH_LOG"\necho https://example.com/acme/repo/pull/7\nexit 0\n'
 GH_FAIL = '#!/bin/sh\necho "gh broke" >&2\nexit 1\n'
 HOOK_BUMP = '#!/bin/sh\necho "code changed under the released tag v1.0.0; bump the version" >&2\nexit 1\n'
@@ -29,6 +33,26 @@ GATE = (
     "    sys.exit(3)\n"
     "sys.stdout.write(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), sys.argv[1])).read())\n"
 )
+
+
+def wait_until(test, condition, what, timeout=30.0):
+    """A condition wait: fails the test when the condition is not true in time."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        time.sleep(0.02)
+    test.fail("timed out waiting for " + what)
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def git(cwd, *args, check=True):
@@ -282,6 +306,17 @@ class TestRollOut(RollOutBase):
         self.assertBlocks(proc)
         self.assertIn("push failed", proc.stdout)
         self.assertNotIn("UPDATED", proc.stdout)
+
+    def test_failed_fetch_with_push_is_blocked_and_untouched(self):
+        root = self.make_consumer("alpha")
+        git(root, "remote", "set-url", "origin", os.path.join(self.tmp, "no-such-remote.git"))
+        head = self.head(root)
+        proc = self.roll("v1.1.0", "--apply", "--push")
+        self.assertBlocks(proc)
+        self.assertIn("BLOCKED        alpha: git fetch -q failed", proc.stdout)
+        self.assertNotIn("UPDATED", proc.stdout)
+        self.assertUntouched(root, head)
+        self.assertEqual(self.settings(root)["version"], "v1.0.0")
 
     def test_missing_folder_and_not_a_consumer(self):
         self.make_consumer("alpha")
@@ -634,6 +669,44 @@ class TestVerify(RollOutBase):
         self.assertBlocks(self.roll("v1.1.0", "--apply"))
         self.assertEqual(self.settings(a)["version"], "v1.0.0")
         self.assertEqual(self.settings(b)["version"], "v1.1.0")
+
+
+class TestVerifyStop(RollOutBase):
+    CHECK = ""
+
+    def bg_pid(self, root):
+        path = os.path.join(root, ".git", "bg-pid")
+        wait_until(self, lambda: os.path.isfile(path) and read(path).strip(), "the fake verify's background pid")
+        return int(read(path).strip())
+
+    def test_verify_past_its_limit_is_checks_fail_and_the_whole_tree_stops(self):
+        root = self.make_consumer("alpha", verify=VERIFY_BG_HANG)
+        head = self.head(root)
+        proc = self.roll("v1.1.0", "--apply", env={"COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT": "2"})
+        self.assertBlocks(proc)
+        self.assertIn("CHECKS FAIL", proc.stdout)
+        self.assertIn("ran past its 2 s limit and was stopped; files restored", proc.stdout)
+        self.assertNotIn("timed out after", proc.stdout)
+        self.assertNotIn("BLOCKED", proc.stdout)
+        self.assertUntouched(root, head)
+        self.assertEqual(self.settings(root)["version"], "v1.0.0")
+        pid = self.bg_pid(root)
+        wait_until(self, lambda: not pid_alive(pid), "the background child to be gone")
+
+    def test_verify_under_its_limit_is_updated_and_leaves_no_child(self):
+        root = self.make_consumer("alpha", verify=VERIFY_BG_LEAVE)
+        proc = self.roll("v1.1.0", "--apply", env={"COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT": "60"})
+        self.assertPasses(proc)
+        self.assertIn("UPDATED", proc.stdout)
+        self.assertEqual(self.settings(root)["version"], "v1.1.0")
+        pid = self.bg_pid(root)
+        wait_until(self, lambda: not pid_alive(pid), "the background child to be gone")
+
+    def test_bad_timeout_setting_is_an_error(self):
+        self.make_consumer("alpha", verify=VERIFY_OK)
+        for bad in ("soon", "0", "-5"):
+            self.assertErrors(self.roll("v1.1.0", "--apply", env={"COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT": bad}),
+                              "COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT")
 
 
 class TestCollaborative(RollOutBase):

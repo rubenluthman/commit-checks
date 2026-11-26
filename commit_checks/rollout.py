@@ -13,9 +13,11 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Dict, List, Optional, Tuple
 
 from . import gitutil
@@ -27,6 +29,8 @@ from .pins import PIN_TYPES, Pin, PinType, Target
 OK = {"updated", "would update", "current", "local"}
 COMMIT_TIMEOUT = 900  # the consumer's own hooks run during the commit
 VERIFY_TIMEOUT = 4 * 3600  # a consumer's own verification script, which may wait for the machine-wide lock
+VERIFY_TIMEOUT_ENV = "COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT"  # seconds; a test seam
+STOP_GRACE = 10  # seconds between TERM and KILL for a verification's process group
 BUMP_HINT = "bump the version"
 VERIFY_SCRIPT = "scripts/verify_commit.sh"
 COLLAB_LINE = "Collaborative: use branches and pull requests."
@@ -127,6 +131,29 @@ class Run:
         self.apply = apply
         self.push = push
         self.log_dir = log_dir
+        self.verify_timeout = _verify_timeout()
+
+
+def _verify_timeout() -> float:
+    raw = os.environ.get(VERIFY_TIMEOUT_ENV)
+    if raw is None:
+        return float(VERIFY_TIMEOUT)
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if not value > 0:
+        raise CheckError("%s must be a number of seconds above zero" % VERIFY_TIMEOUT_ENV)
+    return value
+
+
+def _limit_text(seconds: float) -> str:
+    whole = int(seconds)
+    if whole == seconds and whole % 3600 == 0:
+        return "%d h" % (whole // 3600)
+    if whole == seconds and whole % 60 == 0:
+        return "%d min" % (whole // 60)
+    return "%g s" % seconds
 
 
 def undeclared(root: str, others: List[PinType]) -> List[str]:
@@ -203,14 +230,70 @@ def _rollback(root: str, start: str, default: str, collab: bool) -> None:
         _git(root, "branch", "-q", "-D", PR_BRANCH, ok=(0, 1))
 
 
+class VerifyTimeout(Exception):
+    """The verification ran past its limit and its whole process group was stopped."""
+
+    def __init__(self, limit: float, output: str, log: str):
+        super().__init__("verification timed out")
+        self.limit, self.output, self.log = limit, output, log
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # exists, but not ours to signal: treat as alive
+    return True
+
+
+def _stop_group(proc: "subprocess.Popen") -> None:
+    """Stop the script and everything it started: TERM the group, wait up to STOP_GRACE seconds, then KILL it.
+    `subprocess.run` would kill only the direct child, and a test run it started would go on holding the machine-wide lock."""
+    pgid = proc.pid  # start_new_session made it the leader of its own group
+    if _group_alive(pgid):
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except OSError:
+            pass
+        deadline = time.monotonic() + STOP_GRACE
+        while time.monotonic() < deadline:
+            proc.poll()  # reaps the leader, so a group of zombies is seen as gone
+            if not _group_alive(pgid):
+                break
+            time.sleep(0.05)
+        else:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except OSError:
+                pass
+    try:
+        proc.wait(timeout=STOP_GRACE)
+    except subprocess.TimeoutExpired:
+        raise CheckError("could not stop the verification script")
+
+
 def _verify(name: str, root: str, run: Run) -> Tuple[int, str, str]:
-    """Run the consumer's verify_commit.sh once. Returns (exit code, output, log path)."""
+    """Run the consumer's verify_commit.sh once, in its own process group. Returns (exit code, output, log path).
+    A run past its limit raises VerifyTimeout."""
     os.makedirs(run.log_dir, exist_ok=True)
     log = os.path.join(run.log_dir, re.sub(r"[^A-Za-z0-9._-]", "_", name) + ".log")
+    timed_out = False
     with open(log, "wb") as fh:
-        code = subprocess.run(["./" + VERIFY_SCRIPT], cwd=root, stdout=fh, stderr=subprocess.STDOUT, timeout=VERIFY_TIMEOUT).returncode
+        proc = subprocess.Popen(["./" + VERIFY_SCRIPT], cwd=root, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            code = proc.wait(timeout=run.verify_timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            code = -1
+        finally:
+            _stop_group(proc)  # on a timeout, on any exception, and for children a finished script left behind
     with open(log, encoding="utf-8", errors="replace") as fh:
-        return code, fh.read(), log
+        output = fh.read()
+    if timed_out:
+        raise VerifyTimeout(run.verify_timeout, output, log)
+    return code, output, log
 
 
 def _apply(name: str, root: str, updates: List[Planned], run: Run, default: str, collab: bool, verb: str,
@@ -225,8 +308,13 @@ def _apply(name: str, root: str, updates: List[Planned], run: Run, default: str,
             pin.write(root)
         _git(root, "add", "--", *paths)  # the consumer's verification scans what is staged
         if os.path.isfile(os.path.join(root, VERIFY_SCRIPT)):
-            code, output, log = _verify(name, root, run)
-            if code != 0:
+            try:
+                code, output, log = _verify(name, root, run)
+            except VerifyTimeout as late:
+                failure = Result(name, "checks fail", "%s ran past its %s limit and was stopped; files restored; log: %s"
+                                 % (VERIFY_SCRIPT, _limit_text(late.limit), late.log), [_tail(late.output)] + notes)
+                code = 0
+            if failure is None and code != 0:
                 status = "needs a version bump" if BUMP_HINT in output else "checks fail"
                 failure = Result(name, status, "%s failed (exit %d); files restored; log: %s" % (VERIFY_SCRIPT, code, log),
                                  [_tail(output)] + notes)

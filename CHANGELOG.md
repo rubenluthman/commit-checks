@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `roll-out` stops the whole verification process tree, not only the script, when a run ends early or passes its 4-hour limit. A run past the limit is `CHECKS FAIL` with the limit named; `COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT` sets it in seconds.
+
 ## [0.6.0] - 2026-11-26
 
 - **Breaking:** the `roll-out` list needs `packages` on every entry, and `gate` is now `gates`, keyed by package. `roll-out` works only on entries that name a requested package and blocks an entry that names a package with no pin, or holds a pin it does not name. In a gate command, `{pins}` is replaced by a file holding the pin report.
