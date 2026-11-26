@@ -9,7 +9,7 @@ from .errors import CheckError
 
 SETTINGS_FILE = ".commit-checks.json"
 VISIBILITIES = ("private", "public", "going-public")
-KNOWN_KEYS = {"version", "commit", "source", "visibility", "email_allow", "allow", "self", "release", "links_exclude", "adr_exempt", "vale", "conventional_commits", "subject_max", "annotated_tags_from", "settings_keys", "docs_only"}
+KNOWN_KEYS = {"version", "commit", "source", "visibility", "email_allow", "allow", "self", "release", "links_exclude", "adr_exempt", "vale", "conventional_commits", "subject_max", "annotated_tags_from", "settings_keys", "docs_only", "binary_allow"}
 
 
 class Settings:
@@ -50,6 +50,10 @@ def load(root: str) -> Settings:
             raise CheckError("settings: every allow entry needs rule, path and a written reason")
     if "settings_keys" in data:
         _validate_settings_keys(data["settings_keys"])
+    if "binary_allow" in data:
+        v = data["binary_allow"]
+        if not isinstance(v, list) or not all(isinstance(x, str) and x for x in v):
+            raise CheckError("settings: binary_allow must be a list of non-empty path globs")
     if "docs_only" in data:
         _validate_docs_only(data["docs_only"])
     return Settings(data)

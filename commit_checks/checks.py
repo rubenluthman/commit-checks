@@ -11,7 +11,7 @@ import re
 import subprocess
 from typing import Callable, Dict, List, Optional
 
-from . import archive, docs, engine, gitutil, history, names, release, rules, swiftchecks, vale
+from . import archive, docs, engine, gitutil, history, names, release, repochecks, rules, swiftchecks, vale
 from .errors import CheckError, Finding
 from .settings import Settings
 
@@ -173,6 +173,7 @@ def check_hooks_installed(ctx: Context) -> List[Finding]:
             with open(path, encoding="utf-8", errors="replace") as fh:
                 if "commit-checks" not in fh.read():
                     problems.append(".githooks/%s does not call commit-checks" % hook)
+            problems += repochecks.hook_drift(ctx, hook, path)
     return [Finding("hooks-installed", ".githooks", 0, p, "hooks-installed") for p in problems]
 
 
@@ -285,6 +286,10 @@ CHECKS: Dict[str, Callable[[Context], List[Finding]]] = {
     "vale": lambda ctx: vale.check_vale(ctx),
     "settings-keys": lambda ctx: swiftchecks.check_settings_keys(ctx),
     "log-privacy": lambda ctx: swiftchecks.check_log_privacy(ctx),
+    "rule-globs": lambda ctx: repochecks.check_rule_globs(ctx),
+    "swift-filenames": lambda ctx: repochecks.check_swift_filenames(ctx),
+    "binary-media": lambda ctx: repochecks.check_binary_media(ctx),
+    "dashes-plain": lambda ctx: repochecks.check_dashes_plain(ctx),
     "archive": lambda ctx: [f for p in ctx.archives for f in archive.scan_archive(p, ctx.settings)],
     "history": lambda ctx: history.scan_history(ctx),
 }
@@ -294,13 +299,15 @@ MODES: Dict[str, List[str]] = {
     "scan-archive": ["archive"],
     "history": ["history"],
     "pre-commit": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "author-emails", "links", "adr-format", "versions",
-                  "settings-keys", "log-privacy"],
+                  "settings-keys", "log-privacy", "rule-globs", "swift-filenames", "binary-media", "dashes-plain"],
     "commit-msg": TEXT + ["conventional-commits"],
     "pre-push": TEXT + ["author-emails", "conventional-commits"],
     "verify": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "hooks-installed", "loader-current", "links",
-                      "adr-format", "versions", "release-tags", "vale", "settings-keys", "log-privacy"],
+                      "adr-format", "versions", "release-tags", "vale", "settings-keys", "log-privacy", "rule-globs", "swift-filenames",
+                      "binary-media", "dashes-plain"],
     "ci": TEXT + ["secret-files", "conflict-markers", "gitignore-baseline", "loader-current", "visibility", "links",
-                  "adr-format", "versions", "release-tags", "vale", "settings-keys", "log-privacy"],
+                  "adr-format", "versions", "release-tags", "vale", "settings-keys", "log-privacy", "rule-globs", "swift-filenames",
+                  "dashes-plain"],
 }
 
 

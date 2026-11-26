@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- New checks that repositories used to copy into their own verify scripts: `rule-globs`, `swift-filenames`, `binary-media` (on with a `binary_allow` list in the settings) and `dashes-plain`.
+- `hooks-installed` also fails a hook whose part above `# --- repository checks ---` differs from the pinned release's template, or that has no such line.
+
 ## [0.6.2] - 2026-11-26
 
 - The visibility check closes GitHub's error response before it reports that it cannot reach GitHub.

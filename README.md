@@ -15,7 +15,7 @@ The point of the package is that a check never quietly passes. A missing tool, t
 | secret files | `.env*`, `.dev.vars*`, `*.pem`, `*.key`, `*.p8`, `*.p12`, `*.mobileprovision`, `id_*` and similar |
 | conflict markers | Merge markers left in files |
 | `.gitignore` baseline | A `.gitignore` that does not ignore the secret file names above |
-| hooks installed | Git not pointed at the tracked hooks |
+| hooks installed | Git not pointed at the tracked hooks; a hook that does not call commit-checks; a hook whose part above the `# --- repository checks ---` line differs from the pinned release's `templates/githooks/` file, or that lacks the line (what sits below it is the repository's own) |
 | author addresses | Commit authors, committers and tag authors that are not the GitHub noreply address (public repositories). GitHub's own `noreply@github.com` is accepted as a commit's committer only, so pull requests merged on GitHub pass without `email_allow` |
 | visibility | The settings file disagrees with what GitHub says (CI only) |
 | links | Relative Markdown links that do not point at a tracked file or folder, with exact case |
@@ -25,6 +25,10 @@ The point of the package is that a check never quietly passes. A missing tool, t
 | release tags | Lightweight release tags |
 | commit messages | Subjects that are not Conventional Commits |
 | settings keys | Swift apps with a `settings_keys` setting: a stored-setting key that is not registered, a registered key gone from the code, a retired key whose migration is missing |
+| rule globs | A `.agents/rules/*.md` rule with `trigger: glob` whose `glob` (braces expand) matches no tracked file. Runs only when the repository tracks such rules |
+| Swift file names | Tracked `.swift` files that are not PascalCase (`Type.swift`, `Type+Extension.swift`); `main.swift` and `Package.swift` are excepted. Runs only when Swift files are tracked |
+| binary media | Staged images, audio, video and archives not matched by `binary_allow`. Off unless `.commit-checks.json` has that key |
+| plain-text dashes | An em dash in `*.yml`, `*.yaml`, `*.sh`, `*.toml` or `*.svg` (Vale does not read them), outside `docs/private/`; use a spaced en dash |
 | log privacy | A Swift log value marked `privacy: .public` or `%{public}` without a same-line `// public: <reason>` comment |
 
 Text scans use [gitleaks](https://github.com/gitleaks/gitleaks) 8.30.1 (exactly that version) in two passes: its own default rules, then this package's rules for key shapes, home paths, emails and private names. Matched text is never printed; findings show the rule, file and line.
@@ -66,6 +70,7 @@ Add an entry to `allow` with a rule (a gitleaks rule ID, or a check name such as
 
 - `release`: `{"source": {"type": "package-json|xcode|pyproject|plist|regex", "path": "...", "pattern": "..."}, "changelog": "CHANGELOG.md", "code": ["*.swift"]}` turns on the version checks. `code` lists the file patterns that count as code under a released tag (default: every file). Files that `docs_only` counts as docs never count as code, even under a matching pattern; see [Skipping builds on docs changes](#skipping-builds-on-docs-changes).
 - `release.build`: `{"type": "xcode-build|plist-build|regex", "path": "...", "pattern": "..."}` (optional, next to `release.source`) keeps a build counter that rises with each release. `xcode-build` reads `CURRENT_PROJECT_VERSION` in a `.pbxproj` or JSON `project.xcproj`; `plist-build` reads `CFBundleVersion`. A `regex` with one group splits the value on dots (`1.2` is `(1, 2)`); with several groups each group is one integer, so a font uses `(?s)<key>versionMajor</key>\s*<integer>(\d+)</integer>.*?<key>versionMinor</key>\s*<integer>(\d+)</integer>`. The check compares the staged number with the file at the highest `vX.Y.Z` or `X.Y.Z` tag: it fails when the number is lower, or equal while the version differs from the tag's. It passes when there is no tag or the file is new. A value that is not digits, or more than one distinct value, fails.
+- `binary_allow`: a list of path globs (the whole repository-relative path; `*` also crosses `/`) for the binary-media check, for example `["static/*.png"]`. An empty list turns the check on with nothing allowed. Without the key the check is off.
 - `links_exclude`: path patterns the link check skips.
 - `adr_exempt`: record numbers that keep an old format and skip the heading check.
 - `vale`: `{"globs": ["*.md"], "exclude": []}` picks the files Vale checks. The check runs only when the repository has a `.vale.ini`. A repository with a `CONTRIBUTING.md` gets a notice instead of a failure when Vale is missing locally; CI always fails.
