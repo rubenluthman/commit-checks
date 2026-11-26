@@ -1,8 +1,8 @@
 """roll-out: move every consumer of the shared packages to release tags.
 
 Dry run unless --apply. Exit 0: every consumer is current, updated or a local-path reference.
-Exit 1: some consumer was skipped, held, blocked or failed its checks, or a repository that loads
-a package is missing from the list. Exit 2: the command could not run.
+Exit 1: some consumer was skipped, held, blocked, interrupted or failed its checks, or a repository that loads
+a package is missing from the list. Exit 2: the command could not run, or the run was stopped by a signal.
 
 Only consumers whose `packages` name a requested package are worked on. The list is checked both
 ways: a listed package with no pin found, and a pin the list does not name, both block.
@@ -10,6 +10,8 @@ ways: a listed package with no pin found, and a pin the list does not name, both
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -35,6 +37,45 @@ BUMP_HINT = "bump the version"
 VERIFY_SCRIPT = "scripts/verify_commit.sh"
 COLLAB_LINE = "Collaborative: use branches and pull requests."
 PR_BRANCH = "ci/shared-pins"
+RECORD = "commit-checks-roll-out.json"  # in the repository's git folder while roll-out edits there
+RECORD_FORMAT = 1
+STOP_SIGNALS = tuple(getattr(signal, n) for n in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, n))
+
+
+class Interrupted(KeyboardInterrupt):
+    """SIGTERM or SIGHUP arrived. Like Ctrl-C, it unwinds the run so the repository in hand is put back."""
+
+    def __init__(self, signal_name: str):
+        super().__init__(signal_name)
+        self.signal_name = signal_name
+
+
+def _signal_name(exc: BaseException) -> str:
+    return getattr(exc, "signal_name", "SIGINT")
+
+
+def _install_handlers() -> dict:
+    def handler(signum, _frame):
+        raise Interrupted(signal.Signals(signum).name)
+
+    old = {}
+    for sig in STOP_SIGNALS:
+        if sig != signal.SIGINT:  # Python already turns SIGINT into KeyboardInterrupt
+            old[sig] = signal.signal(sig, handler)
+    return old
+
+
+@contextlib.contextmanager
+def _signals_ignored():
+    """A second Ctrl-C must not cut a restore, or the stop of a process group, short."""
+    old = {}
+    try:
+        for sig in STOP_SIGNALS:
+            old[sig] = signal.signal(sig, signal.SIG_IGN)
+        yield
+    finally:
+        for sig, handler in old.items():
+            signal.signal(sig, handler)
 
 
 class Result:
@@ -253,11 +294,166 @@ def process(entry: Dict[str, str], pins: List[Tuple[PinType, Target]], run: Run,
 
 def _rollback(root: str, start: str, default: str, collab: bool) -> None:
     """Undo everything the run did here. The repository was clean when the run began."""
-    _git(root, "reset", "-q", "--hard", start)
-    if collab and current_branch(root) != default:
-        _git(root, "checkout", "-q", default)
-    if collab:
-        _git(root, "branch", "-q", "-D", PR_BRANCH, ok=(0, 1))
+    with _signals_ignored():
+        _git(root, "reset", "-q", "--hard", start)
+        if collab and current_branch(root) != default:
+            _git(root, "checkout", "-q", default)
+        if collab:
+            _git(root, "branch", "-q", "-D", PR_BRANCH, ok=(0, 1))
+
+
+def _record_path(root: str) -> str:
+    git_dir = _git(root, "rev-parse", "--git-dir").stdout.decode().strip()
+    return os.path.join(os.path.normpath(os.path.join(root, git_dir)), RECORD)
+
+
+def _shown_path(path: str, root: str) -> str:
+    rel = os.path.relpath(path, root)
+    return path if rel.startswith("..") else rel
+
+
+class RunRecord:
+    """What a later run needs to undo this run's edits if it dies: written before the first edit, in the git folder,
+    and held under an exclusive lock for as long as this process lives. The lock goes with the process, also on
+    SIGKILL, so a later run can tell a live run from a dead one without trusting a pid that may be reused."""
+
+    def __init__(self, path: str, fd: int):
+        self.path, self.fd = path, fd
+
+    @classmethod
+    def create(cls, root: str, data: dict) -> "RunRecord":
+        path = _record_path(root)
+        if os.path.exists(path):
+            raise CheckError("a run record is already at %s" % _shown_path(path, root))
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.write(fd, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
+            os.fsync(fd)
+            os.replace(tmp, path)  # complete, and already locked, the moment it has its name
+        except BaseException:
+            os.close(fd)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return cls(path, fd)
+
+    def remove(self) -> None:
+        try:
+            os.unlink(self.path)
+        except FileNotFoundError:
+            pass
+
+    def close(self) -> None:
+        if self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+
+
+def _restorable(root: str, data: dict) -> bool:
+    """True only when the repository is in a shape roll-out alone could have left."""
+    start, default, collab = data["start"], data["default"], data["collab"]
+    files, subjects = set(data["files"]), set(data["subjects"])
+    if not (isinstance(start, str) and isinstance(default, str) and isinstance(collab, bool)):
+        return False
+    if _git(root, "cat-file", "-e", start + "^{commit}", ok=(0, 1, 128)).returncode != 0:
+        return False
+    if current_branch(root) not in ((default, PR_BRANCH) if collab else (default,)):
+        return False
+    ignored = "refs/remotes/origin/" + PR_BRANCH if collab else None  # a pushed pull-request branch is only noted
+
+    def ours(tip: str) -> bool:
+        if _git(root, "merge-base", "--is-ancestor", start, tip, ok=(0, 1)).returncode != 0:
+            return False
+        for line in _git(root, "rev-list", "--parents", "%s..%s" % (start, tip)).stdout.decode().splitlines():
+            fields = line.split()
+            if len(fields) != 2:
+                return False  # a merge, or a root commit
+            if _git(root, "log", "-1", "--format=%s", fields[0]).stdout.decode().strip() not in subjects:
+                return False
+            remote = _git(root, "for-each-ref", "--contains", fields[0], "--format=%(refname)", "refs/remotes").stdout.decode().split()
+            if [r for r in remote if r != ignored]:
+                return False
+        return True
+
+    if not ours("HEAD"):
+        return False
+    if collab and _git(root, "show-ref", "--verify", "-q", "refs/heads/" + PR_BRANCH, ok=(0, 1)).returncode == 0 and not ours(PR_BRANCH):
+        return False
+    status = _git(root, "status", "--porcelain=v1", "-z").stdout
+    for entry in gitutil.split_z(status):
+        if set(entry[:2]) - set("M ") or entry[3:] not in files:  # roll-out only modifies files it names
+            return False
+    return True
+
+
+def settle_record(entry: Dict[str, str], run: Run) -> Optional[Result]:
+    """A run record left in this repository comes before anything else. Returns the repository's result when it ends
+    here (another run is working, a dry run found a dead run's edits, or the record cannot be trusted), and None when
+    there is none or `--apply` has just undone the dead run, so the repository goes on as usual."""
+    name, root = entry["name"], entry["path"]
+    if not os.path.isdir(root):
+        return None
+    try:
+        if os.path.realpath(gitutil.toplevel(root)) != os.path.realpath(root):
+            return None
+        path = _record_path(root)
+    except (CheckError, OSError, subprocess.SubprocessError):
+        return None  # not a repository: the usual checks say so
+    if not os.path.exists(path):
+        return None
+    hand = "check it by hand, then delete %s" % _shown_path(path, root)
+    changed = Result(name, "blocked", "an earlier run stopped here and the repository changed since; " + hand)
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError as exc:
+        return Result(name, "blocked", "cannot read the run record (%s); %s" % (exc.strerror, hand))
+    try:
+        locked = False
+        try:
+            fcntl.flock(fd, (fcntl.LOCK_EX if run.apply else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        except OSError:
+            locked = True
+        try:
+            with os.fdopen(os.dup(fd), encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not isinstance(data, dict) or data.get("format") != RECORD_FORMAT:
+                raise ValueError("format")
+            pid, began = data["pid"], data["started"]
+            if not (isinstance(pid, int) and isinstance(began, (int, float))):
+                raise ValueError("fields")
+            data["files"], data["subjects"], data["start"], data["default"], data["collab"]
+        except (ValueError, KeyError, OSError):
+            if locked:
+                return Result(name, "blocked", "another roll-out is working here")
+            return Result(name, "blocked", "the run record left here cannot be read; " + hand)
+        if locked:
+            return Result(name, "blocked", "another roll-out (pid %d) is working here" % pid)
+        try:
+            fine = _restorable(root, data)
+        except (CheckError, OSError, subprocess.SubprocessError, TypeError, AttributeError):
+            fine = False
+        if not fine:
+            return changed
+        short = data["start"][:7]
+        if not run.apply:
+            return Result(name, "interrupted", "an earlier run (pid %d, started %s) stopped here and left its edits; "
+                          "--apply undoes them first (back to %s)" % (pid, time.strftime("%H:%M", time.localtime(began)), short))
+        _rollback(root, data["start"], data["default"], data["collab"])
+        notes = []
+        if data["collab"] and _git(root, "show-ref", "--verify", "-q", "refs/remotes/origin/" + PR_BRANCH, ok=(0, 1)).returncode == 0:
+            notes.append("origin/%s exists; roll-out never deletes a remote branch" % PR_BRANCH)
+        if _git(root, "status", "--porcelain").stdout.strip():
+            return Result(name, "blocked", "undid an earlier run's edits, but the repository is still not clean; " + hand)
+        os.unlink(path)
+        _emit(run.out, "%-14s %s: undid an earlier run's edits; back at %s\n" % ("RESTORED", name, short)
+              + "".join("    %s\n" % n for n in notes))
+        return None
+    finally:
+        os.close(fd)
 
 
 class VerifyTimeout(Exception):
@@ -281,6 +477,11 @@ def _group_alive(pgid: int) -> bool:
 def _stop_group(proc: "subprocess.Popen") -> None:
     """Stop the script and everything it started: TERM the group, wait up to STOP_GRACE seconds, then KILL it.
     `subprocess.run` would kill only the direct child, and a test run it started would go on holding the machine-wide lock."""
+    with _signals_ignored():
+        _stop_group_now(proc)
+
+
+def _stop_group_now(proc: "subprocess.Popen") -> None:
     pgid = proc.pid  # start_new_session made it the leader of its own group
     if _group_alive(pgid):
         try:
@@ -330,7 +531,24 @@ def _apply(name: str, root: str, updates: List[Planned], run: Run, default: str,
            notes: List[str]) -> Result:
     start = _git(root, "rev-parse", "HEAD").stdout.decode().strip()
     paths = sorted(rel for _t, _g, pin in updates for rel in pin.files)
+    record = RunRecord.create(root, {
+        "format": RECORD_FORMAT, "start": start, "default": default, "collab": collab, "files": paths,
+        "subjects": [t.subject(g.tag) for t, g, _p in updates], "pid": os.getpid(), "started": time.time()})
+    try:
+        return _apply_recorded(name, root, updates, run, default, collab, verb, notes, start, paths, record)
+    finally:
+        record.close()
+
+
+def _stopped(exc: BaseException, detail: str) -> None:
+    if isinstance(exc, KeyboardInterrupt):
+        exc.detail = detail  # type: ignore[attr-defined]
+
+
+def _apply_recorded(name: str, root: str, updates: List[Planned], run: Run, default: str, collab: bool, verb: str,
+                    notes: List[str], start: str, paths: List[str], record: RunRecord) -> Result:
     failure: Optional[Result] = None
+    phase = "edit"
     run.begin(name, os.path.isfile(os.path.join(root, VERIFY_SCRIPT)))
     try:
         if collab:
@@ -339,12 +557,14 @@ def _apply(name: str, root: str, updates: List[Planned], run: Run, default: str,
             pin.write(root)
         _git(root, "add", "--", *paths)  # the consumer's verification scans what is staged
         if os.path.isfile(os.path.join(root, VERIFY_SCRIPT)):
+            phase = "verify"
             try:
                 code, output, log = _verify(name, root, run)
             except VerifyTimeout as late:
                 failure = Result(name, "checks fail", "%s ran past its %s limit and was stopped; files restored; log: %s"
                                  % (VERIFY_SCRIPT, _limit_text(late.limit), late.log), [_tail(late.output)] + notes)
                 code = 0
+            phase = "commit"
             if failure is None and code != 0:
                 status = "needs a version bump" if BUMP_HINT in output else "checks fail"
                 failure = Result(name, status, "%s failed (exit %d); files restored; log: %s" % (VERIFY_SCRIPT, code, log),
@@ -352,6 +572,7 @@ def _apply(name: str, root: str, updates: List[Planned], run: Run, default: str,
         else:
             notes = notes + ["no %s; only the commit hooks checked this" % VERIFY_SCRIPT]
         if failure is None:
+            phase = "commit"
             _git(root, "reset", "-q", "HEAD", "--", *paths)
             for ptype, target, pin in updates:
                 subject = ptype.subject(target.tag)
@@ -367,22 +588,36 @@ def _apply(name: str, root: str, updates: List[Planned], run: Run, default: str,
                 if not pin.committed(root, "HEAD"):
                     failure = Result(name, "blocked", "the new commit does not contain the new pin; files restored", notes)
                     break
-    except BaseException:
+        if failure is None:
+            if collab:
+                _git(root, "checkout", "-q", default)
+            if _git(root, "status", "--porcelain").stdout.strip():
+                notes = notes + ["the repository is not clean after the run; check it by hand"]
+    except BaseException as exc:
         _rollback(root, start, default, collab)
+        record.remove()
+        _stopped(exc, "verification stopped, edits undone" if phase == "verify" else "edits undone")
         raise
     if failure is not None:
         _rollback(root, start, default, collab)
         if _git(root, "status", "--porcelain").stdout.strip():
-            failure.detail += "; WARNING: the repository is still not clean"
+            failure.detail += "; WARNING: the repository is still not clean"  # the record stays: the next run looks again
+        else:
+            record.remove()
         return failure
-    if collab:
-        _git(root, "checkout", "-q", default)
-    if _git(root, "status", "--porcelain").stdout.strip():
-        notes = notes + ["the repository is not clean after the run; check it by hand"]
     if not run.push:
+        record.remove()
         return Result(name, "updated", verb + (", committed on %s, not pushed" % PR_BRANCH if collab else ", not pushed"), notes)
-    if collab:
-        return _open_pull_request(name, root, updates, default, verb, notes)
+    try:  # a stop from here on leaves the commits and the record: the next run sees whether the push landed
+        result = _open_pull_request(name, root, updates, default, verb, notes) if collab else _push(name, root, default, verb, notes)
+    except BaseException as exc:
+        _stopped(exc, "the commits stay and the push is not confirmed; the next run checks them against origin")
+        raise
+    record.remove()
+    return result
+
+
+def _push(name: str, root: str, default: str, verb: str, notes: List[str]) -> Result:
     sent = subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/" + default], cwd=root,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300, env=gitutil.clean_env())
     if sent.returncode != 0:
@@ -441,6 +676,27 @@ def _is_own_clone(entry: Dict[str, str], target: Target) -> bool:
 
 def main(argv: List[str]) -> int:
     ns = parse(argv)
+    old = _install_handlers()
+    try:
+        return _main(ns)
+    except KeyboardInterrupt as exc:  # before the first repository: nothing was edited
+        sys.stdout.flush()
+        _say_stopped(exc, [])
+        return 2
+    finally:
+        for sig, handler in old.items():
+            signal.signal(sig, handler)
+
+
+def _say_stopped(exc: BaseException, not_reached: List[str]) -> None:
+    try:
+        sys.stdout.write("roll-out stopped by %s; not reached: %s.\n" % (_signal_name(exc), ", ".join(not_reached) or "none"))
+        sys.stdout.flush()
+    except OSError:
+        pass  # a closed terminal: the exit code still says it
+
+
+def _main(ns: argparse.Namespace) -> int:
     if ns.push and not ns.apply:
         raise CheckError("--push needs --apply")
     consumers = load_list(ns.list)
@@ -496,26 +752,43 @@ def main(argv: List[str]) -> int:
                 text += "    " + line + "\n"
         _emit(out, text)
 
-    for entry, active, others in plan:
-        if not active:
-            problems = undeclared(entry["path"], others) if os.path.isdir(entry["path"]) else []
-            if problems:
-                finish(Result(entry["name"], "blocked", "; ".join(problems)))
-            else:
-                idle += 1
-            continue
-        held = None
-        if gated and entry["name"] not in ns.approve:
-            if gate_error:
-                held = gate_error
-            else:
-                d = decisions.get(entry["name"])
-                if not isinstance(d, dict) or d.get("decision") not in ("go", "hold"):
-                    held = "the gate did not give a go or hold for it"
-                elif d["decision"] == "hold":
-                    held = "gate: " + str(d.get("reason", "no reason given"))
-        finish(process(entry, active, run, held, others))
+    stopped: Optional[BaseException] = None
+    not_reached: List[str] = []
+    for index, (entry, active, others) in enumerate(plan):
+        try:
+            ended = settle_record(entry, run)  # a record from an earlier run comes before everything else
+            if ended is not None:
+                finish(ended)
+                continue
+            if not active:
+                problems = undeclared(entry["path"], others) if os.path.isdir(entry["path"]) else []
+                if problems:
+                    finish(Result(entry["name"], "blocked", "; ".join(problems)))
+                else:
+                    idle += 1
+                continue
+            held = None
+            if gated and entry["name"] not in ns.approve:
+                if gate_error:
+                    held = gate_error
+                else:
+                    d = decisions.get(entry["name"])
+                    if not isinstance(d, dict) or d.get("decision") not in ("go", "hold"):
+                        held = "the gate did not give a go or hold for it"
+                    elif d["decision"] == "hold":
+                        held = "gate: " + str(d.get("reason", "no reason given"))
+            finish(process(entry, active, run, held, others))
+        except KeyboardInterrupt as exc:  # the repository in hand is already put back, or was never touched
+            stopped = exc
+            finish(Result(entry["name"], "interrupted", "%s; %s" % (_signal_name(exc), getattr(exc, "detail", "nothing was edited"))))
+            not_reached = [e["name"] for e, a, _o in plan[index + 1:] if a]
+            break
 
+    if stopped is not None:
+        _say_stopped(stopped, not_reached)
+        names = [r.name for r in results if r.status not in OK]
+        _emit(out, "%d consumer(s); %d need attention%s.\n" % (len(results) + len(not_reached), len(names), (": " + ", ".join(names)) if names else ""))
+        return 2
     for path, loads in unlisted:
         _emit(out, "UNLISTED       %s loads %s but is not in the list\n" % (os.path.relpath(path, consumers.scan_root), ", ".join(loads)))
     bad = [r for r in results if r.status not in OK]

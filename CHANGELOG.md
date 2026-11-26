@@ -4,6 +4,7 @@
 
 - `roll-out` stops the whole verification process tree, not only the script, when a run ends early or passes its 4-hour limit. A run past the limit is `CHECKS FAIL` with the limit named; `COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT` sets it in seconds.
 - `roll-out` prints the pin reader's problems as `PROBLEM` notes under each result, as `pins` does, and prints each repository's line as it ends instead of all at the end. With `--apply` a `START` line and the time taken mark each repository it edits, and the summary line names who needs attention.
+- A stopped `roll-out` undoes the repository it was in and exits 2: SIGINT, SIGTERM and SIGHUP are caught, and a run record in the git folder lets the next run undo a run that was killed outright (`INTERRUPTED` in a dry run, `RESTORED` with `--apply`).
 
 ## [0.6.0] - 2026-11-26
 

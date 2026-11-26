@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -170,21 +171,39 @@ class RollOutBase(Base):
         write(path, json.dumps(data))
         return path
 
-    def roll(self, to, *flags, list_path=None, env=None, pins=None, stdout_path=None):
-        """`to` is the commit-checks tag; `pins` ({name: tag}) replaces it when given. With `stdout_path`, roll-out's
-        standard output goes to that file, which a fake verify script can read while the run goes on."""
+    def roll_command(self, to, flags, list_path=None, env=None, pins=None):
         e = env_for(extra=dict({"COMMIT_CHECKS_PATH": self.pkg, "HOUSE_STYLE_PATH": self.style}, **(env or {})))
         pins = pins if pins is not None else {"commit-checks": to}
         args = []
         for name, tag in pins.items():
             args += ["--pin", "%s=%s" % (name, tag)]
-        argv = [sys.executable, "-m", "commit_checks", "roll-out", "--list", list_path or self.write_list()] + args + list(flags)
+        return [sys.executable, "-m", "commit_checks", "roll-out", "--list", list_path or self.write_list()] + args + list(flags), e
+
+    def roll(self, to, *flags, list_path=None, env=None, pins=None, stdout_path=None):
+        """`to` is the commit-checks tag; `pins` ({name: tag}) replaces it when given. With `stdout_path`, roll-out's
+        standard output goes to that file, which a fake verify script can read while the run goes on."""
+        argv, e = self.roll_command(to, flags, list_path, env, pins)
         if stdout_path:
             with open(stdout_path, "w") as fh:
                 proc = subprocess.run(argv, cwd=self.tmp, stdout=fh, stderr=subprocess.PIPE, text=True, env=e, timeout=300, errors="replace")
             proc.stdout = read(stdout_path)
             return proc
         return subprocess.run(argv, cwd=self.tmp, capture_output=True, text=True, env=e, timeout=300, errors="replace")
+
+    def roll_started(self, to, *flags, list_path=None, env=None, pins=None):
+        """Start roll-out without waiting for it. SIGINT is made catchable first: a test runner started in the
+        background has it ignored, and a child would inherit that."""
+        argv, e = self.roll_command(to, flags, list_path, env, pins)
+        proc = subprocess.Popen(argv, cwd=self.tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=e, errors="replace",
+                                preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+        self.addCleanup(self._reap, proc)
+        return proc
+
+    @staticmethod
+    def _reap(proc):
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate()
 
     def settings(self, root):
         with open(os.path.join(root, ".commit-checks.json")) as fh:
