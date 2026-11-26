@@ -311,6 +311,15 @@ class ReleaseTagTests(Base):
         r.git("tag", "v1.0.0")
         self.assertBlocks(self.push_tag(r, "v1.0.0"), "FAIL release-tags: v1.0.0")
 
+    def test_pushing_a_commit_to_a_release_tag_name_fails(self):
+        r = self.repo(commit_first=True)
+        r.git("branch", "backup")
+        sha = r.git("rev-parse", "HEAD").stdout.strip()
+        for local in ("HEAD", "refs/heads/backup"):
+            with self.subTest(local=local):
+                proc = r.run("pre-push", stdin="%s %s refs/tags/v1.0.0 %s\n" % (local, sha, "0" * 40))
+                self.assertBlocks(proc, "FAIL release-tags: v1.0.0")
+
     def test_pushing_an_annotated_release_tag_passes(self):
         r = self.repo(commit_first=True)
         r.git("tag", "-a", "v1.0.0", "-m", "release")

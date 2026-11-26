@@ -73,6 +73,12 @@ class TestFormMatrix(Base):
         text = 'packages:\n  J:\n    url: "https://github.com/acme/judarn-extras"\n    path: "../packages/judarn-extras"\n'
         self.assertEqual(_parse_swift_file("project.yml", text), ([], False))
 
+    def test_usage_names_every_pin_type(self):
+        from commit_checks.cli import USAGE
+        for name in PIN_TYPES:
+            with self.subTest(name=name):
+                self.assertIn(name, USAGE)
+
     def test_row_names_are_unique(self):
         names = [r["name"] for r in rows()]
         self.assertEqual(len(names), len(set(names)))

@@ -19,7 +19,7 @@ USAGE = """usage: commit-checks MODE
   history               scan the whole history (every commit, message, author and tag), as for a repository about to go public
   roll-out --list FILE --pin NAME=vX.Y.Z ... [--apply] [--push] [--log-dir DIR] [--approve NAME ...]
                         move every listed consumer to release tags of the shared packages
-                        (commit-checks, house-style); dry run unless --apply
+                        (commit-checks, house-style, judarn); dry run unless --apply
   pins --list FILE --package NAME ... [--json]
                         read which release of each package every listed consumer pins
                         (read-only: no tag, no network, no edits)
@@ -61,7 +61,7 @@ def _pushed_refs(stdin_text: str) -> List[tuple]:
         if len(parts) != 4:
             raise CheckError("unexpected pre-push input")
         if parts[1] != ZERO:
-            refs.append((parts[0], parts[1]))
+            refs.append((parts[2], parts[1]))  # (remote ref, local sha): the remote ref names the tag the push creates
     return refs
 
 

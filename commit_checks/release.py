@@ -199,13 +199,14 @@ def check_release_tags(ctx) -> List[Finding]:
 
 
 def check_pushed_tags(ctx, refs) -> List[Finding]:
-    """Pushed release tags are annotated. `refs` holds (local ref, local sha) pairs; deletions are left out."""
+    """Pushed release tags are annotated. `refs` holds (remote ref, local sha) pairs; deletions are left out.
+    The remote ref names the tag the push creates, whatever local ref it comes from (`HEAD:refs/tags/v1.0.0`)."""
     out: List[Finding] = []
-    for lref, sha in refs:
-        if not lref.startswith("refs/tags/"):
+    for rref, sha in refs:
+        if not rref.startswith("refs/tags/"):
             continue
         kind = gitutil.run(["cat-file", "-t", sha], ctx.root).stdout.decode("utf-8", "replace").strip()
-        out.extend(_untagged_release(ctx, lref[len("refs/tags/"):], kind))
+        out.extend(_untagged_release(ctx, rref[len("refs/tags/"):], kind))
     return out
 
 

@@ -2,9 +2,6 @@
 
 ## Active
 
-- read: `pre-push` accepts an unannotated remote release tag when pushed from a branch or non-version ref – push `HEAD:refs/tags/v1.0.0` or `backup:refs/tags/v1.0.0`, and `pre-push` passes because it checks only the local ref name instead of the remote ref (`commit_checks/cli.py`, `_pushed_refs`; `commit_checks/release.py`, `check_pushed_tags`)
-- `commit_checks/cli.py` `USAGE` lists only `commit-checks` and `house-style` under `roll-out` and omits `judarn`
-
 ## Icebox
 
 - Let the Judarn editor rewrite `Package.resolved` version 1 and the workspace copies of `Package.resolved` (`X.xcworkspace/...`). Both are read today, and roll-out blocks or notes them instead of editing.

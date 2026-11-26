@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `pre-push` checks the tag name a push creates, so `git push origin HEAD:refs/tags/v1.0.0` can no longer put an unannotated release tag on the remote. The `roll-out` help lists `judarn`.
+
 - `pins` and `roll-out` find a Judarn `url` or `path` in `project.yml` when the value is quoted or followed by a comment.
 
 - `rule-globs` reads the `globs` key and comma lists, matches from the repository root, and lets `**` span any number of folders.
