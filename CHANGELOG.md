@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-26
+
 - `settings-keys` also finds the key given to apple-app-support's `FolderBookmark(key:)`, so a bookmark key is registered as `live` and needs a migration when it goes.
 
 ## [0.7.0] - 2026-11-26
