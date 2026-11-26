@@ -2,6 +2,12 @@
 
 ## Active
 
+- read: `rule-globs` rejects valid `**` globs – add a `.agents/rules/*.md` rule with `trigger: glob` and `glob: "Sources/**/*.swift"` when tracked files sit at `Sources/View.swift` or `Sources/A/B/View.swift`, and `verify` and `pre-commit` fail because `PurePath.match` treats `**` as one folder level (`commit_checks/repochecks.py`, `check_rule_globs`)
+- read: `rule-globs` misses an orphaned relative glob when the same folder name exists deeper in the tree – set `glob: "src/*.tsx"` in a `.agents/rules/*.md` rule, move `src/App.tsx` to `legacy/src/App.tsx`, and `verify` still passes because `PurePath.match` matches from the right instead of the repository root (`commit_checks/repochecks.py`, `check_rule_globs`)
+- read: `pins` and `roll-out` miss a Judarn reference in `project.yml` when `url` or `path` is quoted – write `url: "https://github.com/acme/judarn"` or `path: "../packages/judarn"` in `project.yml`, and `pins` reports no pin found while `roll-out` blocks the repository (`commit_checks/pins_judarn.py`, `_parse_swift_file`)
+- read: `pre-push` accepts an unannotated remote release tag when pushed from a branch or non-version ref – push `HEAD:refs/tags/v1.0.0` or `backup:refs/tags/v1.0.0`, and `pre-push` passes because it checks only the local ref name instead of the remote ref (`commit_checks/cli.py`, `_pushed_refs`; `commit_checks/release.py`, `check_pushed_tags`)
+- `commit_checks/cli.py` `USAGE` lists only `commit-checks` and `house-style` under `roll-out` and omits `judarn`
+
 ## Icebox
 
 - Let the Judarn editor rewrite `Package.resolved` version 1 and the workspace copies of `Package.resolved` (`X.xcworkspace/...`). Both are read today, and roll-out blocks or notes them instead of editing.
