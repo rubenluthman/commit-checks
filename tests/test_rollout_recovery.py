@@ -43,7 +43,7 @@ class RecoveryBase(RollOutBase):
         path = os.path.join(self.git_dir(root), "verify-pid")
         if os.path.isfile(path):
             try:
-                os.killpg(int(read(path).strip()), signal.SIGKILL)
+                os.killpg(os.getpgid(int(read(path).strip())), signal.SIGKILL)  # the script's group, led by the watcher
             except (OSError, ValueError):
                 pass
 
@@ -129,6 +129,32 @@ class TestSignalsDuringVerify(RecoveryBase):
         self.assertEqual(proc.returncode, 2, out + err)
         self.assertIn("roll-out stopped by SIGTERM; not reached: none.", out)
         self.assertNotIn("Traceback", err)
+
+
+class TestKilledOutright(RecoveryBase):
+    """SIGKILL cannot be caught: the verify tree must stop anyway, within the stop grace."""
+    CHECK = ""
+
+    def killed(self, whole_group):
+        root = self.make_consumer("alpha", verify=VERIFY_HANG_IF)
+        self.hang(root)
+        proc = self.roll_started("v1.1.0", "--apply", new_session=True)  # its own group, so a group kill reaches only roll-out
+        self.wait_marker(root, "verify-started")
+        self.addCleanup(self.kill_verify_tree, root)
+        pid = self.bg_pid(root)
+        self.assertTrue(pid_alive(pid))
+        if whole_group:
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+        proc.communicate(timeout=30)
+        wait_until(self, lambda: not pid_alive(pid), "the verify tree to stop after roll-out was killed")  # grace is 10 s
+
+    def test_sigkill_to_the_process_group(self):
+        self.killed(True)
+
+    def test_sigkill_to_the_python_process_only(self):
+        self.killed(False)
 
 
 class TestStoppedDuringThePush(RecoveryBase):

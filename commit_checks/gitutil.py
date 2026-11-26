@@ -16,6 +16,11 @@ def clean_env() -> dict:
     return env
 
 
+def _subcommand(args: List[str]) -> str:
+    """The git subcommand without its flags, for error text."""
+    return next((a for a in args if not a.startswith("-")), "")
+
+
 def run(args: List[str], cwd: str, input_bytes: Optional[bytes] = None, ok=(0,), timeout: int = GIT_TIMEOUT):
     try:
         proc = subprocess.run(
@@ -24,10 +29,10 @@ def run(args: List[str], cwd: str, input_bytes: Optional[bytes] = None, ok=(0,),
     except FileNotFoundError:
         raise CheckError("git is not installed")
     except subprocess.TimeoutExpired:
-        raise CheckError("git timed out: git " + " ".join(args[:2]))
+        raise CheckError("git timed out: git " + _subcommand(args))
     if proc.returncode not in ok:
         err = proc.stderr.decode("utf-8", "replace").strip()[:300]
-        raise CheckError("git %s failed (%d): %s" % (" ".join(args[:2]), proc.returncode, err))
+        raise CheckError("git %s failed (%d): %s" % (_subcommand(args), proc.returncode, err))
     return proc
 
 

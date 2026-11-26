@@ -190,12 +190,12 @@ class RollOutBase(Base):
             return proc
         return subprocess.run(argv, cwd=self.tmp, capture_output=True, text=True, env=e, timeout=300, errors="replace")
 
-    def roll_started(self, to, *flags, list_path=None, env=None, pins=None):
+    def roll_started(self, to, *flags, list_path=None, env=None, pins=None, new_session=False):
         """Start roll-out without waiting for it. SIGINT is made catchable first: a test runner started in the
         background has it ignored, and a child would inherit that."""
         argv, e = self.roll_command(to, flags, list_path, env, pins)
         proc = subprocess.Popen(argv, cwd=self.tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=e, errors="replace",
-                                preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+                                preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL), start_new_session=new_session)
         self.addCleanup(self._reap, proc)
         return proc
 
@@ -337,7 +337,7 @@ class TestRollOut(RollOutBase):
         head = self.head(root)
         proc = self.roll("v1.1.0", "--apply", "--push")
         self.assertBlocks(proc)
-        self.assertIn("BLOCKED        alpha: git fetch -q failed", proc.stdout)
+        self.assertIn("BLOCKED        alpha: git fetch failed", proc.stdout)
         self.assertNotIn("UPDATED", proc.stdout)
         self.assertUntouched(root, head)
         self.assertEqual(self.settings(root)["version"], "v1.0.0")

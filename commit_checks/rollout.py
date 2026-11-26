@@ -32,6 +32,7 @@ OK = {"updated", "would update", "current", "local"}
 COMMIT_TIMEOUT = 900  # the consumer's own hooks run during the commit
 VERIFY_TIMEOUT = 4 * 3600  # a consumer's own verification script, which may wait for the machine-wide lock
 VERIFY_TIMEOUT_ENV = "COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT"  # seconds; a test seam
+WATCHER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "verifywatch.py")
 STOP_GRACE = 10  # seconds between TERM and KILL for a verification's process group
 BUMP_HINT = "bump the version"
 VERIFY_SCRIPT = "scripts/verify_commit.sh"
@@ -512,14 +513,20 @@ def _verify(name: str, root: str, run: Run) -> Tuple[int, str, str]:
     log = os.path.join(run.log_dir, _log_name(name))
     timed_out = False
     with open(log, "wb") as fh:
-        proc = subprocess.Popen(["./" + VERIFY_SCRIPT], cwd=root, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+        # The watcher leads the new group and stops it if this process dies: a SIGKILL cannot be caught here.
+        # close_fds (the default) keeps the pipe's write end in this process alone.
+        proc = subprocess.Popen([sys.executable, "-I", WATCHER, str(STOP_GRACE), "./" + VERIFY_SCRIPT], cwd=root,
+                                stdin=subprocess.PIPE, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             code = proc.wait(timeout=run.verify_timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
             code = -1
         finally:
-            _stop_group(proc)  # on a timeout, on any exception, and for children a finished script left behind
+            try:
+                _stop_group(proc)  # on a timeout, on any exception, and for children a finished script left behind
+            finally:
+                proc.stdin.close()
     with open(log, encoding="utf-8", errors="replace") as fh:
         output = fh.read()
     if timed_out:
