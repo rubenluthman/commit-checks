@@ -252,6 +252,8 @@ def check_visibility(ctx: Context) -> List[Finding]:
             data = json.loads(resp.read().decode("utf-8"))
         private = data["private"]
     except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError) as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()  # it holds the open response
         raise CheckError("cannot ask GitHub whether %s is public: %s" % (repo, exc))
     if not isinstance(private, bool):
         raise CheckError("GitHub gave an unexpected answer about visibility")

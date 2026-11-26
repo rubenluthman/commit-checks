@@ -231,6 +231,14 @@ class VisibilityTests(Base):
         self.assertErrors(self.ci(r, self.serve(b'{"private": "yes"}')), "unexpected")
         self.assertErrors(self.ci(r, self.serve(b"{}", code=500)), "cannot ask GitHub")
 
+    def test_a_broken_answer_leaves_no_response_open(self):
+        # An HTTPError holds the open response; Python 3.13 and later warn when it is dropped unclosed.
+        r = self.repo(visibility="public")
+        self.adopt(r)
+        proc = self.ci(r, self.serve(b"{}", code=500), PYTHONWARNINGS="always::ResourceWarning")
+        self.assertErrors(proc, "cannot ask GitHub")
+        self.assertNotIn("ResourceWarning", proc.stderr)
+
 
 class HookRootTests(LoaderBase):
     """The loader runs inside real hooks, in a main checkout and in a linked worktree."""

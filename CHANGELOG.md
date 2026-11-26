@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- The visibility check closes GitHub's error response before it reports that it cannot reach GitHub.
+
 ## [0.6.1] - 2026-11-26
 
 - `roll-out` stops the whole verification process tree, not only the script, when a run ends early, is killed outright or passes its 4-hour limit. A run past the limit is `CHECKS FAIL` with the limit named; `COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT` sets it in seconds.
