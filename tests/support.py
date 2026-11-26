@@ -1,4 +1,5 @@
 """Test helpers. Fake secrets are built from pieces here, so no key-shaped text sits in a file."""
+import gc
 import json
 import os
 import random
@@ -9,12 +10,29 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 
 PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHIM = os.path.join(PKG, "tests", "canary_shim")
 GITLEAKS = shutil.which("gitleaks")
 
 _rng = random.Random(20261119)
+
+# A file or socket that is dropped open warns from inside its finalizer, where an exception cannot reach the
+# test: `-W error::ResourceWarning` only changes the wording and the run still passes. So record each warning
+# here and let Base fail the test that caused it.
+_leaks = []
+_previous_hook = sys.unraisablehook
+
+
+def _unraisable(args):
+    if args.exc_type is not None and issubclass(args.exc_type, ResourceWarning):
+        _leaks.append(str(args.exc_value))
+    # Always pass it on, so a leak outside a test's window (a class or module fixture, between tests) still prints.
+    _previous_hook(args)
+
+
+sys.unraisablehook = _unraisable
 
 
 def rnd(n, alphabet=string.ascii_letters + string.digits):
@@ -168,6 +186,9 @@ class Base(unittest.TestCase):
     CHECK = ""
 
     def setUp(self):
+        warnings.filterwarnings("error", category=ResourceWarning)  # the runner restores its filters after the run
+        before = len(_leaks)
+        self.addCleanup(self._check_nothing_left_open, before)
         if not GITLEAKS:
             self.fail("gitleaks is not installed; the suite cannot run")
         self.repos = []
@@ -180,6 +201,12 @@ class Base(unittest.TestCase):
     def tearDown(self):
         for r in self.repos:
             r.cleanup()
+
+    def _check_nothing_left_open(self, before):
+        gc.collect()  # a leak in a reference cycle warns only when the collector frees it
+        if len(_leaks) > before:
+            self.fail("left open: %s; run with python3 -X tracemalloc=10 to see where each was made"
+                      % "; ".join(_leaks[before:]))
 
     def assertBlocks(self, proc, text=None):
         self.assertEqual(proc.returncode, 1, "expected a finding; got rc=%d\n%s%s" % (proc.returncode, proc.stdout, proc.stderr))
