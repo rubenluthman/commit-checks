@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `settings-keys` also finds the key given to apple-app-support's `FolderBookmark(key:)`, so a bookmark key is registered as `live` and needs a migration when it goes.
+
 ## [0.7.0] - 2026-11-26
 
 - New checks that repositories used to copy into their own verify scripts: `rule-globs`, `swift-filenames`, `binary-media` (on with a `binary_allow` list in the settings) and `dashes-plain`.

@@ -1,8 +1,8 @@
 """Checks for Swift apps: stored-setting keys change only with a migration, and public log values carry a reason.
 
 The Swift reader is a small tokenizer, not a parser. It sees comments, strings (plain, raw, multi-line and
-interpolated) and punctuation well enough to find the key given to @AppStorage, @SceneStorage and
-UserDefaults calls, and the string constants those calls name. A key built at run time cannot be seen.
+interpolated) and punctuation well enough to find the key given to @AppStorage, @SceneStorage, UserDefaults
+calls and `FolderBookmark(key:)`, and the string constants those calls name. A key built at run time cannot be seen.
 """
 from __future__ import annotations
 
@@ -27,6 +27,8 @@ NOT_NAMES = {"func", "var", "let", "init", "subscript", "where", "case"}
 # inputs, for one). They count only when called on something named like defaults: `defaults`, `UserDefaults.standard`.
 KVC_METHODS = {"setValue", "value"}
 STORAGE_WRAPPERS = {"AppStorage", "SceneStorage"}
+# Types that store a value in UserDefaults under the key their initializer takes as `key:` (apple-app-support).
+KEYED_STORES = {"FolderBookmark"}
 IGNORED_CONTAINERS = {"CodingKeys"}
 
 
@@ -226,6 +228,9 @@ def analyse(toks: List[Tok]) -> Tuple[List[Const], List[Use]]:
             arg = None
             if v in STORAGE_WRAPPERS and i and toks[i - 1].value == "@" and i + 1 < n and toks[i + 1].value == "(":
                 arg = _arg(toks, i + 2)
+            elif (v in KEYED_STORES and i + 3 < n and toks[i + 1].value == "(" and toks[i + 2].value == "key"
+                  and toks[i + 3].value == ":"):
+                arg = _arg(toks, i + 4)
             elif v == "forKey" and i + 1 < n and toks[i + 1].value == ":" and parens and _defaults_call(*parens[-1]):
                 arg = _arg(toks, i + 2)
             if arg:

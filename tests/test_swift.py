@@ -69,6 +69,23 @@ class SettingsKeyTests(Base):
                 r = self.make(src)
                 self.assertBlocks(r.run("verify"), "FAIL settings-keys: App/SettingsView.swift:")
 
+    def test_a_folder_bookmark_key_counts_as_stored(self):
+        # A type's own constant passed through Self, with other arguments after it.
+        src = VIEW + ('struct ExportFolder {\n    static let defaultsKey = "exportFolder"\n'
+                      '    let b = FolderBookmark(key: Self.defaultsKey, defaults: .standard)\n}\n')
+        self.assertBlocks(self.make(src).run("verify"), "FAIL settings-keys: App/SettingsView.swift:")
+        self.assertPasses(self.make(src, live=LIVE + ["exportFolder"]).run("verify"))
+        literal = VIEW + 'let b = FolderBookmark(key: "literalFolder")\n'
+        self.assertBlocks(self.make(literal).run("verify"), "FAIL settings-keys: App/SettingsView.swift:")
+        self.assertPasses(self.make(literal, live=LIVE + ["literalFolder"]).run("verify"))
+        # A removed bookmark key is caught like any other removed live key.
+        r = self.make(VIEW, live=LIVE + ["exportFolder"])
+        self.assertBlocks(r.run("verify"), "FAIL settings-keys: .commit-checks.json")
+
+    def test_other_key_labels_and_types_are_not_bookmarks(self):
+        src = VIEW + 'let a = FolderBookmark(name: "notAKey")\nlet b = Cache(key: "alsoNot")\n'
+        self.assertPasses(self.make(src).run("verify"))
+
     def test_a_constant_that_is_registered_passes(self):
         src = VIEW + 'extension Keys {\n    static let extra = "extraKey"\n}\n@AppStorage(Keys.extra) var y = 1\n'
         r = self.make(src, live=LIVE + ["extraKey"])

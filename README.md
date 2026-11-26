@@ -99,7 +99,7 @@ Both checks are for Swift code and read the staged files.
 - `retired`: keys no longer stored. `migration` is a name (a function, for example) that must appear in code under `paths`; comments do not count.
 - `system`: keys the app only reads.
 
-The check finds keys in `@AppStorage("…")`, `@SceneStorage("…")`, and `UserDefaults` calls such as `set`, `object`, `string` and `removeObject` with `forKey: "…"`. A key passed as a constant (`@AppStorage(Keys.tab)`, `forKey: Keys.tab.rawValue`) is looked up among the string constants and enum raw values in the same files. It ignores `CodingKeys` and dictionary calls such as `removeValue(forKey:)`. A key built at run time cannot be seen.
+The check finds keys in `@AppStorage("…")`, `@SceneStorage("…")`, `UserDefaults` calls such as `set`, `object`, `string` and `removeObject` with `forKey: "…"`, and apple-app-support's `FolderBookmark(key: "…")`. A key passed as a constant (`@AppStorage(Keys.tab)`, `forKey: Keys.tab.rawValue`) is looked up among the string constants and enum raw values in the same files. It ignores `CodingKeys` and dictionary calls such as `removeValue(forKey:)`. A key built at run time cannot be seen.
 
 It fails when a key in code is in no list, when a `live` key is no longer in code, when a retired entry's migration is not found, and when a key is listed twice. A glob that matches no tracked file is an error.
 
