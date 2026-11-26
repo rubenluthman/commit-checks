@@ -41,7 +41,8 @@ def main():
     original = support.env_for
     support.env_for = lambda *a, **kw: original(*a, **dict(kw, canary=True))
     suite = unittest.defaultTestLoader.discover(HERE, pattern="test_*.py")
-    result = unittest.TextTestRunner(resultclass=Recorder, stream=open(os.devnull, "w")).run(suite)
+    with open(os.devnull, "w") as devnull:
+        result = unittest.TextTestRunner(resultclass=Recorder, stream=devnull).run(suite)
 
     from commit_checks import checks
     expected = set(checks.CHECKS) | {"engine"}  # the loader is not a scanner; its tests do not use the shim

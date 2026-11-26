@@ -221,7 +221,8 @@ class GitignoreBaselineTests(Base):
         for drop in (".env", "*.p8", "*.pem", "id_*", ".dev.vars*"):
             with self.subTest(dropped=drop):
                 r = self.repo()
-                lines = [l for l in open(r.path(".gitignore")).read().split("\n") if l != drop]
+                with open(r.path(".gitignore")) as fh:
+                    lines = [l for l in fh.read().split("\n") if l != drop]
                 r.write(".gitignore", "\n".join(lines))
                 self.assertBlocks(r.run("verify"), "gitignore-baseline")
 

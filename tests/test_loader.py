@@ -183,7 +183,11 @@ class VisibilityTests(Base):
     def serve(self, answer, code=200):
         handler = type("H", (_Handler,), {"answer": answer, "code": code})
         server = http.server.HTTPServer(("127.0.0.1", 0), handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        # Cleanups run last in, first out: stop the loop, wait for the thread, close the socket.
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join)
         self.addCleanup(server.shutdown)
         return "http://127.0.0.1:%d" % server.server_port
 

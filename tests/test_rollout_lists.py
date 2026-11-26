@@ -12,8 +12,10 @@ GATE_PINS = (
     "here = os.path.dirname(os.path.abspath(__file__))\n"
     "with open(sys.argv[1]) as fh:\n"
     "    data = fh.read()\n"
-    "open(os.path.join(here, 'seen-pins.json'), 'w').write(data)\n"
-    "open(os.path.join(here, 'seen-path.txt'), 'w').write(sys.argv[1])\n"
+    "with open(os.path.join(here, 'seen-pins.json'), 'w') as fh:\n"
+    "    fh.write(data)\n"
+    "with open(os.path.join(here, 'seen-path.txt'), 'w') as fh:\n"
+    "    fh.write(sys.argv[1])\n"
     "json.dump({c['name']: {'decision': 'go', 'reason': 'ok'} for c in json.loads(data)['consumers']}, sys.stdout)\n"
 )
 SWIFT = {"Package.swift": swift_text("Package.swift", "exact")}

@@ -29,10 +29,12 @@ HOOK_VALE = '#!/bin/sh\nif git diff --cached --name-only | grep -q vale.ini; the
 HOOK_OTHER = '#!/bin/sh\necho "some other complaint" >&2\nexit 1\n'
 GATE = (
     "import os, sys\n"
-    "open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate-tag.txt'), 'w').write(sys.argv[2])\n"
+    "with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate-tag.txt'), 'w') as fh:\n"
+    "    fh.write(sys.argv[2])\n"
     "if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate-fails')):\n"
     "    sys.exit(3)\n"
-    "sys.stdout.write(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), sys.argv[1])).read())\n"
+    "with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), sys.argv[1])) as fh:\n"
+    "    sys.stdout.write(fh.read())\n"
 )
 
 
@@ -753,8 +755,8 @@ class TestLiveOutput(RollOutBase):
     def test_the_header_comes_before_the_gate(self):
         a = self.make_consumer("alpha")
         out_path = os.path.join(self.tmp, "stdout.txt")
-        write(os.path.join(self.tmp, "gate.py"), "import os, sys\nopen(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate-saw.txt'), 'w').write("
-              "open(os.environ['ROLL_OUT_STDOUT']).read())\nsys.stdout.write('{\"alpha\": {\"decision\": \"go\", \"reason\": \"r\"}}')\n")
+        write(os.path.join(self.tmp, "gate.py"), "import os, sys\nwith open(os.environ['ROLL_OUT_STDOUT']) as fh:\n    saw = fh.read()\n"
+              "with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate-saw.txt'), 'w') as fh:\n    fh.write(saw)\nsys.stdout.write('{\"alpha\": {\"decision\": \"go\", \"reason\": \"r\"}}')\n")
         lst = self.write_list({"gates": {"commit-checks": [sys.executable, "gate.py", "{tag}", "{pins}"]}})
         proc = self.roll("v1.1.0", list_path=lst, stdout_path=out_path, env={"ROLL_OUT_STDOUT": out_path})
         self.assertPasses(proc)

@@ -278,7 +278,7 @@ class TestCombined(JudarnBase):
         self.app("web", {"package.json": PACKAGE_JSON % "1.0.0", "package-lock.json": LOCK % "1.0.0"})
         write(os.path.join(self.tmp, "gate.json"), json.dumps({"web": {"decision": "hold", "reason": "visible change"}}))
         gate = os.path.join(self.tmp, "gate.py")
-        write(gate, "import os, sys\nsys.stdout.write(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate.json')).read())\n")
+        write(gate, "import os, sys\nwith open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate.json')) as fh:\n    sys.stdout.write(fh.read())\n")
         lst = self.write_list({"gates": {"judarn": [sys.executable, gate, "gate.json", "{tag}"]}})
         env = {"JUDARN_PATH": self.pkg, "NPM_LOG": self.log, "NPM_PUBLISHED": "1.0.1",
                "PATH": self.bin + os.pathsep + os.environ["PATH"]}

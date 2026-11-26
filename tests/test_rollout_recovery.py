@@ -119,7 +119,7 @@ class TestSignalsDuringVerify(RecoveryBase):
     def test_a_stop_before_any_repository_is_reported_and_exits_two(self):
         # The gate is the slow part here; it never ends.
         self.make_consumer("alpha")
-        write(os.path.join(self.tmp, "gate.py"), "import os, sys, time\nopen(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate-started'), 'w').write('x')\ntime.sleep(300)\n")
+        write(os.path.join(self.tmp, "gate.py"), "import os, sys, time\nwith open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate-started'), 'w') as fh:\n    fh.write('x')\ntime.sleep(300)\n")
         lst = self.write_list({"gates": {"commit-checks": [os.sys.executable, "gate.py", "{tag}", "{pins}"]}})
         proc = self.roll_started("v1.1.0", "--apply", list_path=lst)
         marker = os.path.join(self.tmp, "gate-started")
