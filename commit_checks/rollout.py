@@ -132,6 +132,32 @@ class Run:
         self.push = push
         self.log_dir = log_dir
         self.verify_timeout = _verify_timeout()
+        self.out = sys.stdout
+        self.started: Dict[str, float] = {}  # repository name -> monotonic start, for repositories roll-out edited
+
+    def begin(self, name: str, has_script: bool) -> None:
+        """Print the START line: roll-out is about to edit this repository, the slow part."""
+        if not self.apply:
+            return
+        self.started[name] = time.monotonic()
+        text = "at " + time.strftime("%H:%M")
+        if has_script:
+            text += "; log: " + _log_name(name)
+        _emit(self.out, "%-14s %s: %s\n" % ("START", name, text))
+
+
+def _emit(out, text: str) -> None:
+    out.write(text)
+    out.flush()  # a pipe buffers in blocks, and a run that takes hours must be followable
+
+
+def _log_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name) + ".log"
+
+
+def _minutes_text(seconds: float) -> str:
+    whole = int(seconds / 60.0 + 0.5)
+    return "(%d min)" % whole if whole else "(<1 min)"
 
 
 def _verify_timeout() -> float:
@@ -282,7 +308,7 @@ def _verify(name: str, root: str, run: Run) -> Tuple[int, str, str]:
     """Run the consumer's verify_commit.sh once, in its own process group. Returns (exit code, output, log path).
     A run past its limit raises VerifyTimeout."""
     os.makedirs(run.log_dir, exist_ok=True)
-    log = os.path.join(run.log_dir, re.sub(r"[^A-Za-z0-9._-]", "_", name) + ".log")
+    log = os.path.join(run.log_dir, _log_name(name))
     timed_out = False
     with open(log, "wb") as fh:
         proc = subprocess.Popen(["./" + VERIFY_SCRIPT], cwd=root, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
@@ -305,6 +331,7 @@ def _apply(name: str, root: str, updates: List[Planned], run: Run, default: str,
     start = _git(root, "rev-parse", "HEAD").stdout.decode().strip()
     paths = sorted(rel for _t, _g, pin in updates for rel in pin.files)
     failure: Optional[Result] = None
+    run.begin(name, os.path.isfile(os.path.join(root, VERIFY_SCRIPT)))
     try:
         if collab:
             _git(root, "checkout", "-q", "-b", PR_BRANCH)
@@ -435,6 +462,16 @@ def main(argv: List[str]) -> int:
                      [p for p, _t in mine if p.name not in entry["packages"]]))
     acting = [entry for entry, active, _o in plan if active]
 
+    log_dir = ""
+    if ns.apply:
+        log_dir = os.path.abspath(ns.log_dir) if ns.log_dir else tempfile.mkdtemp(prefix="commit-checks-roll-out-")
+    run = Run(ns.apply, ns.push, log_dir)
+    out = run.out
+    _emit(out, "roll-out %s (%s)\n" % (", ".join("%s %s" % (t.package, t.tag) for _p, t in pins),
+                                       "apply" if ns.apply else "dry run, nothing edited"))
+    if log_dir:
+        _emit(out, "verification logs: %s\n" % log_dir)
+
     decisions: Dict[str, Dict[str, str]] = {}
     gate_error = ""
     if gated:
@@ -444,23 +481,26 @@ def main(argv: List[str]) -> int:
             decisions = run_gate(consumers, ptype.name, target.tag, report)
         except CheckError as exc:
             gate_error = str(exc)
-    log_dir = ""
-    if ns.apply:
-        log_dir = os.path.abspath(ns.log_dir) if ns.log_dir else tempfile.mkdtemp(prefix="commit-checks-roll-out-")
-    run = Run(ns.apply, ns.push, log_dir)
 
-    out = sys.stdout
-    out.write("roll-out %s (%s)\n" % (", ".join("%s %s" % (t.package, t.tag) for _p, t in pins),
-                                      "apply" if ns.apply else "dry run, nothing edited"))
-    if log_dir:
-        out.write("verification logs: %s\n" % log_dir)
-    results = []
+    results: List[Result] = []
     idle = 0
+
+    def finish(r: Result) -> None:
+        began = run.started.get(r.name)
+        if began is not None:
+            r.detail += " " + _minutes_text(time.monotonic() - began)
+        results.append(r)
+        text = "%-14s %s%s\n" % (r.status.upper(), r.name, (": " + r.detail) if r.detail else "")
+        for note in r.notes:
+            for line in note.splitlines():
+                text += "    " + line + "\n"
+        _emit(out, text)
+
     for entry, active, others in plan:
         if not active:
             problems = undeclared(entry["path"], others) if os.path.isdir(entry["path"]) else []
             if problems:
-                results.append(Result(entry["name"], "blocked", "; ".join(problems)))
+                finish(Result(entry["name"], "blocked", "; ".join(problems)))
             else:
                 idle += 1
             continue
@@ -474,17 +514,13 @@ def main(argv: List[str]) -> int:
                     held = "the gate did not give a go or hold for it"
                 elif d["decision"] == "hold":
                     held = "gate: " + str(d.get("reason", "no reason given"))
-        results.append(process(entry, active, run, held, others))
+        finish(process(entry, active, run, held, others))
 
-    for r in results:
-        out.write("%-14s %s%s\n" % (r.status.upper(), r.name, (": " + r.detail) if r.detail else ""))
-        for note in r.notes:
-            for line in note.splitlines():
-                out.write("    " + line + "\n")
     for path, loads in unlisted:
-        out.write("UNLISTED       %s loads %s but is not in the list\n" % (os.path.relpath(path, consumers.scan_root), ", ".join(loads)))
+        _emit(out, "UNLISTED       %s loads %s but is not in the list\n" % (os.path.relpath(path, consumers.scan_root), ", ".join(loads)))
     bad = [r for r in results if r.status not in OK]
     if idle:
-        out.write("%d listed %s not name %s; not touched.\n" % (idle, "repository does" if idle == 1 else "repositories do", " or ".join(sorted(ns.pins))))
-    out.write("%d consumer(s); %d need attention.\n" % (len(results), len(bad) + len(unlisted)))
+        _emit(out, "%d listed %s not name %s; not touched.\n" % (idle, "repository does" if idle == 1 else "repositories do", " or ".join(sorted(ns.pins))))
+    attention = [r.name for r in bad] + [os.path.relpath(path, consumers.scan_root) for path, _l in unlisted]
+    _emit(out, "%d consumer(s); %d need attention%s.\n" % (len(results), len(attention), (": " + ", ".join(attention)) if attention else ""))
     return 1 if bad or unlisted else 0

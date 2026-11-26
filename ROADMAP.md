@@ -3,7 +3,6 @@
 ## Active
 
 - Close the files and sockets that older tests leave open (`tests/test_text_rules.py` and the loader tests), so the verify log prints no `ResourceWarning` and a new warning stands out.
-- `roll-out` prints one line per repository as it starts and ends it, instead of only a report at the end, so a run that takes hours can be followed.
 - `roll-out` leaves no half-done repository when it is interrupted: an interrupted run leaves its pin edits staged today. Record each repository's starting commit where a later run finds it and restores it first.
 
 ## Icebox

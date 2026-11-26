@@ -170,16 +170,21 @@ class RollOutBase(Base):
         write(path, json.dumps(data))
         return path
 
-    def roll(self, to, *flags, list_path=None, env=None, pins=None):
-        """`to` is the commit-checks tag; `pins` ({name: tag}) replaces it when given."""
+    def roll(self, to, *flags, list_path=None, env=None, pins=None, stdout_path=None):
+        """`to` is the commit-checks tag; `pins` ({name: tag}) replaces it when given. With `stdout_path`, roll-out's
+        standard output goes to that file, which a fake verify script can read while the run goes on."""
         e = env_for(extra=dict({"COMMIT_CHECKS_PATH": self.pkg, "HOUSE_STYLE_PATH": self.style}, **(env or {})))
         pins = pins if pins is not None else {"commit-checks": to}
         args = []
         for name, tag in pins.items():
             args += ["--pin", "%s=%s" % (name, tag)]
-        return subprocess.run([sys.executable, "-m", "commit_checks", "roll-out", "--list", list_path or self.write_list()]
-                              + args + list(flags),
-                              cwd=self.tmp, capture_output=True, text=True, env=e, timeout=300, errors="replace")
+        argv = [sys.executable, "-m", "commit_checks", "roll-out", "--list", list_path or self.write_list()] + args + list(flags)
+        if stdout_path:
+            with open(stdout_path, "w") as fh:
+                proc = subprocess.run(argv, cwd=self.tmp, stdout=fh, stderr=subprocess.PIPE, text=True, env=e, timeout=300, errors="replace")
+            proc.stdout = read(stdout_path)
+            return proc
+        return subprocess.run(argv, cwd=self.tmp, capture_output=True, text=True, env=e, timeout=300, errors="replace")
 
     def settings(self, root):
         with open(os.path.join(root, ".commit-checks.json")) as fh:
@@ -707,6 +712,83 @@ class TestVerifyStop(RollOutBase):
         for bad in ("soon", "0", "-5"):
             self.assertErrors(self.roll("v1.1.0", "--apply", env={"COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT": bad}),
                               "COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT")
+
+
+class TestLiveOutput(RollOutBase):
+    CHECK = ""
+    COPY_OUT = '#!/bin/sh\ncp "$ROLL_OUT_STDOUT" .git/out-so-far\nexit 0\n'
+
+    def test_each_line_is_written_as_its_repository_ends(self):
+        self.make_consumer("alpha", verify=VERIFY_OK)
+        b = self.make_consumer("beta", verify=self.COPY_OUT)
+        out_path = os.path.join(self.tmp, "stdout.txt")
+        proc = self.roll("v1.1.0", "--apply", stdout_path=out_path, env={"ROLL_OUT_STDOUT": out_path})
+        self.assertPasses(proc)
+        seen = read(os.path.join(b, ".git", "out-so-far"))  # what roll-out had written while beta verified
+        self.assertTrue(seen.startswith("roll-out commit-checks v1.1.0 (apply)\n"), seen)  # the header comes first
+        self.assertRegex(seen, r"(?m)^START          alpha: at \d\d:\d\d; log: alpha\.log$")
+        self.assertRegex(seen, r"(?m)^UPDATED        alpha: .*not pushed \(<?\d+ min\)$")
+        self.assertRegex(seen, r"(?m)^START          beta: at \d\d:\d\d; log: beta\.log$")
+        self.assertNotIn("UPDATED        beta", seen)  # beta had not ended yet
+
+    def test_the_header_comes_before_the_gate(self):
+        a = self.make_consumer("alpha")
+        out_path = os.path.join(self.tmp, "stdout.txt")
+        write(os.path.join(self.tmp, "gate.py"), "import os, sys\nopen(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gate-saw.txt'), 'w').write("
+              "open(os.environ['ROLL_OUT_STDOUT']).read())\nsys.stdout.write('{\"alpha\": {\"decision\": \"go\", \"reason\": \"r\"}}')\n")
+        lst = self.write_list({"gates": {"commit-checks": [sys.executable, "gate.py", "{tag}", "{pins}"]}})
+        proc = self.roll("v1.1.0", list_path=lst, stdout_path=out_path, env={"ROLL_OUT_STDOUT": out_path})
+        self.assertPasses(proc)
+        self.assertEqual(read(os.path.join(self.tmp, "gate-saw.txt")), "roll-out commit-checks v1.1.0 (dry run, nothing edited)\n")
+
+    def test_a_dry_run_prints_no_start_line_and_no_duration(self):
+        self.make_consumer("alpha")
+        self.make_consumer("beta")
+        proc = self.roll("v1.1.0")
+        self.assertPasses(proc)
+        self.assertNotIn("START", proc.stdout)
+        self.assertNotIn(" min)", proc.stdout)
+
+    def test_only_repositories_that_are_edited_get_a_start_line(self):
+        self.make_consumer("alpha", tag="v1.1.0", loader=LOADER_V2)  # current
+        self.make_consumer("beta")
+        write(os.path.join(self.consumers[1]["path"], "scratch.txt"), "x\n")  # skipped: uncommitted
+        self.make_consumer("gamma", verify=VERIFY_OK)
+        proc = self.roll("v1.1.0", "--apply")
+        self.assertBlocks(proc)
+        starts = [l.split()[1] for l in proc.stdout.splitlines() if l.startswith("START")]
+        self.assertEqual(starts, ["gamma:"])
+        self.assertIn("SKIPPED        beta: has uncommitted changes\n", proc.stdout)  # no duration on a line that had no START
+        self.assertRegex(proc.stdout, r"(?m)^UPDATED        gamma: .* \(<?\d+ min\)$")
+
+    def test_a_failed_repository_line_ends_with_its_duration(self):
+        self.make_consumer("alpha", verify=VERIFY_FAIL)
+        proc = self.roll("v1.1.0", "--apply")
+        self.assertBlocks(proc)
+        self.assertRegex(proc.stdout, r"(?m)^CHECKS FAIL    alpha: .*log: \S+alpha\.log \(<?\d+ min\)$")
+
+    def test_the_summary_names_who_needs_attention(self):
+        self.make_consumer("alpha")
+        b = self.make_consumer("beta")
+        write(os.path.join(b, "scratch.txt"), "x\n")
+        self.make_consumer("gamma")
+        git(self.consumers[2]["path"], "checkout", "-q", "-b", "topic")
+        proc = self.roll("v1.1.0")
+        self.assertBlocks(proc)
+        self.assertIn("3 consumer(s); 2 need attention: beta, gamma.\n", proc.stdout)
+
+    def test_the_summary_names_nobody_when_all_is_well(self):
+        self.make_consumer("alpha")
+        proc = self.roll("v1.1.0")
+        self.assertPasses(proc)
+        self.assertIn("1 consumer(s); 0 need attention.\n", proc.stdout)
+
+    def test_the_summary_names_an_unlisted_repository(self):
+        self.make_consumer("alpha")
+        self.make_consumer("beta")
+        proc = self.roll("v1.1.0", list_path=self.write_list({"scanRoot": "apps"}, consumers=[self.consumers[0]]))
+        self.assertBlocks(proc)
+        self.assertIn("1 consumer(s); 1 need attention: beta.\n", proc.stdout)
 
 
 class TestCollaborative(RollOutBase):
