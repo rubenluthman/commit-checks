@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import fnmatch
 import os
-import pathlib
 import re
 from typing import List, Optional
 
@@ -39,6 +38,47 @@ def expand_braces(text: str) -> List[str]:
             return results
 
 
+def split_globs(value: str) -> List[str]:
+    """Split a rule's value on commas outside `{}`; strip spaces and drop empty items."""
+    items = []  # type: List[str]
+    depth = 0
+    cur = ""
+    for ch in value:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            items.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    items.append(cur)
+    return [i.strip() for i in items if i.strip()]
+
+
+def _match_parts(pat: List[str], parts: List[str]) -> bool:
+    if not pat:
+        return not parts
+    if pat[0] == "**":
+        return any(_match_parts(pat[1:], parts[i:]) for i in range(len(parts) + 1))
+    return bool(parts) and fnmatch.fnmatchcase(parts[0], pat[0]) and _match_parts(pat[1:], parts[1:])
+
+
+def glob_matches(pattern: str, path: str) -> bool:
+    """A pattern without `/` matches the base name at any depth; one with `/` matches from the
+    repository root. A `**` part matches zero or more folders; `*` never crosses `/`."""
+    if "/" not in pattern:
+        return fnmatch.fnmatchcase(path.rsplit("/", 1)[-1], pattern)
+    for prefix in ("./", "/"):
+        if pattern.startswith(prefix):
+            pattern = pattern[len(prefix):]
+            break
+    if pattern.endswith("/"):  # as in gitignore, `scripts/` is everything under that folder
+        pattern = pattern.rstrip("/") + "/**"
+    return _match_parts(pattern.split("/"), path.split("/"))
+
+
 def _frontmatter(text: str) -> str:
     """The block between the leading `---` lines; the whole text when there is none."""
     m = re.match(r"\s*---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(\r?\n|$)", text, re.S)
@@ -66,11 +106,13 @@ def check_rule_globs(ctx) -> List[Finding]:
         block = _frontmatter(read_index(ctx.root, rule))
         if _field(block, "trigger") != "glob":
             continue
-        raw = _field(block, "glob")
-        if not raw:
-            out.append(Finding("rule-globs", rule, 0, "trigger is glob but no glob pattern is set", "rule-globs"))
+        values = [v for v in (_field(block, "globs"), _field(block, "glob")) if v]
+        if not values:
+            out.append(Finding("rule-globs", rule, 0, "trigger is glob but no pattern is set (use globs or glob)", "rule-globs"))
             continue
-        matched = any(pathlib.PurePath(p).match(pat) for pat in expand_braces(raw) if pat for p in paths)
+        raw = ", ".join(values)
+        pats = [pat for v in values for item in split_globs(v) for pat in expand_braces(item) if pat]
+        matched = any(glob_matches(pat, p) for pat in pats for p in paths)
         if not matched:
             out.append(Finding("rule-globs", rule, 0, "glob '%s' matches no tracked file" % raw, "rule-globs"))
     return [f for f in out if not ctx.allowed(f)]

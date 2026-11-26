@@ -6,10 +6,10 @@ HOOKS = ("pre-commit", "commit-msg", "pre-push")
 MARKER = "# --- repository checks ---"
 
 
-def rule(glob=None, trigger="glob"):
+def rule(glob=None, trigger="glob", key="glob"):
     text = "---\ntrigger: %s\n" % trigger
     if glob is not None:
-        text += 'glob: "%s"\n' % glob
+        text += '%s: "%s"\n' % (key, glob)
     return text + "---\nBody mentions trigger: glob and glob: nothing.\n"
 
 
@@ -54,7 +54,60 @@ class RuleGlobTests(Base):
     def test_trigger_glob_without_a_pattern_fails(self):
         r = self.repo()
         r.stage(".agents/rules/bad.md", rule(None))
-        self.assertBlocks(r.run("verify"), "no glob pattern")
+        self.assertBlocks(r.run("verify"), "no pattern is set")
+
+    def _passes(self, glob, path, key="glob"):
+        r = self.repo()
+        r.stage(".agents/rules/x.md", rule(glob, key=key))
+        r.stage(path, "x\n")
+        self.assertPasses(r.run("verify"))
+
+    def _fails(self, glob, path, key="glob"):
+        r = self.repo()
+        r.stage(".agents/rules/x.md", rule(glob, key=key))
+        r.stage(path, "x\n")
+        self.assertBlocks(r.run("verify"), "matches no tracked file")
+
+    def test_double_star_matches_zero_folders(self):
+        self._passes("Sources/**/*.swift", "Sources/View.swift")
+
+    def test_double_star_matches_many_folders(self):
+        self._passes("Sources/**/*.swift", "Sources/A/B/View.swift")
+
+    def test_a_relative_glob_matches_from_the_root(self):
+        self._fails("src/*.tsx", "legacy/src/App.tsx")
+
+    def test_a_comma_list_matches_any_item(self):
+        self._passes("*.ts, *.tsx", "web/App.tsx", key="globs")
+
+    def test_a_comma_list_with_no_match_fails(self):
+        self._fails("*.ts, *.tsx", "web/App.js", key="globs")
+
+    def test_the_globs_key_is_read(self):
+        r = self.repo()
+        r.stage(".agents/rules/x.md", rule("*.swift", key="globs"))
+        r.stage("A.swift", "x\n")
+        res = r.run("verify")
+        self.assertNotIn("no pattern", res.stdout + res.stderr)
+        self.assertPasses(res)
+
+    def test_a_brace_group_inside_a_folder_pattern(self):
+        self._passes("src/*.{ts,tsx}", "src/App.ts")
+
+    def test_a_brace_group_in_a_double_star_name(self):
+        self._passes("**/*{Alpha,Beta}*.swift", "App/Views/BetaView.swift")
+
+    def test_double_star_prefix_matches_a_root_file(self):
+        self._passes("**/data_def.json", "data_def.json")
+
+    def test_a_trailing_slash_matches_everything_under_the_folder(self):
+        self._passes("scripts/", "scripts/a.sh")
+
+    def test_a_trailing_slash_matches_from_the_root(self):
+        self._fails("scripts/", "tools/scripts/a.sh")
+
+    def test_a_brace_list_of_paths(self):
+        self._passes("{CHANGELOG.md,App.xcodeproj/**,scripts/**}", "App.xcodeproj/project.pbxproj")
 
     def test_no_rules_folder_means_no_check(self):
         r = self.repo()

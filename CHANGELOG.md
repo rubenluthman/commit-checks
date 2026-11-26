@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `rule-globs` reads the `globs` key and comma lists, matches from the repository root, and lets `**` span any number of folders.
+
 ## [0.7.1] - 2026-11-26
 
 - `settings-keys` also finds the key given to apple-app-support's `FolderBookmark(key:)`, so a bookmark key is registered as `live` and needs a migration when it goes.

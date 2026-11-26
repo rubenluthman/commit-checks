@@ -25,7 +25,7 @@ The point of the package is that a check never quietly passes. A missing tool, t
 | release tags | Lightweight release tags |
 | commit messages | Subjects that are not Conventional Commits |
 | settings keys | Swift apps with a `settings_keys` setting: a stored-setting key that is not registered, a registered key gone from the code, a retired key whose migration is missing |
-| rule globs | A `.agents/rules/*.md` rule with `trigger: glob` whose `glob` (braces expand) matches no tracked file. Runs only when the repository tracks such rules |
+| rule globs | A `.agents/rules/*.md` rule with `trigger: glob` whose `globs` or `glob` (comma list, braces expand) matches no tracked file. A pattern without `/` matches file names at any depth; one with `/` matches from the repository root, and `**` spans folders. Runs only when the repository tracks such rules |
 | Swift file names | Tracked `.swift` files that are not PascalCase (`Type.swift`, `Type+Extension.swift`); `main.swift` and `Package.swift` are excepted. Runs only when Swift files are tracked |
 | binary media | Staged images, audio, video and archives not matched by `binary_allow`. Off unless `.commit-checks.json` has that key |
 | plain-text dashes | An em dash in `*.yml`, `*.yaml`, `*.sh`, `*.toml` or `*.svg` (Vale does not read them), outside `docs/private/`; use a spaced en dash |
