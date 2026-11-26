@@ -554,10 +554,21 @@ def _parse_swift_file(name: str, text: str) -> Tuple[List[dict], bool]:
         def indent(line: str) -> int:
             return len(line) - len(line.lstrip())
 
+        def plain(line: str) -> str:
+            """The line with a trailing ` # comment` and one pair of matching quotes around the value removed."""
+            m = re.match(r"^(\s*(?:url|path):\s*)(.*?)\s*$", line)
+            if not m:
+                return line
+            value = re.sub(r"\s+#.*$", "", m.group(2)).strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            return m.group(1) + value
+
         for i, line in enumerate(lines):
-            if re.match(r"^\s*path:\s*\S*[/\\]judarn[/\\]?\s*$", line, re.I):
+            bare = plain(line)
+            if re.match(r"^\s*path:\s*\S*[/\\]judarn[/\\]?\s*$", bare, re.I):
                 local = True
-            if not (re.match(r"^\s*url:\s*\S*judarn(\.git)?\s*$", line, re.I) and URL_RE.search(line)):
+            if not (re.match(r"^\s*url:\s*\S*judarn(\.git)?\s*$", bare, re.I) and URL_RE.search(bare)):
                 continue
             ind = indent(line)
             block = []

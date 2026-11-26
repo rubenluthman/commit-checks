@@ -58,6 +58,21 @@ class TestFormMatrix(Base):
         self.assertEqual(sorted(EMITTABLE - seen), [], "rows missing for these (file, requirement) pairs")
         self.assertEqual(sorted(seen - EMITTABLE), [], "rows outside the list of pairs the reader can emit")
 
+    def test_project_yml_reads_quoted_values_and_comments(self):
+        from commit_checks.pins_judarn import _parse_swift_file
+        for value in ('"%s"', "'%s'", "%s # note", '"%s" # note', "'%s'  # note"):
+            with self.subTest(value=value):
+                url = "packages:\n  J:\n    url: %s\n    exactVersion: 1.0.0\n" % (value % "https://github.com/acme/judarn")
+                remote, local = _parse_swift_file("project.yml", url)
+                self.assertEqual((remote, local), ([{"type": "exact", "version": "1.0.0"}], False))
+                path = "packages:\n  J:\n    path: %s\n" % (value % "../packages/judarn")
+                self.assertEqual(_parse_swift_file("project.yml", path), ([], True))
+
+    def test_project_yml_url_of_another_package_is_no_pin(self):
+        from commit_checks.pins_judarn import _parse_swift_file
+        text = 'packages:\n  J:\n    url: "https://github.com/acme/judarn-extras"\n    path: "../packages/judarn-extras"\n'
+        self.assertEqual(_parse_swift_file("project.yml", text), ([], False))
+
     def test_row_names_are_unique(self):
         names = [r["name"] for r in rows()]
         self.assertEqual(len(names), len(set(names)))

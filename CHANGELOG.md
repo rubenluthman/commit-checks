@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `pins` and `roll-out` find a Judarn `url` or `path` in `project.yml` when the value is quoted or followed by a comment.
+
 - `rule-globs` reads the `globs` key and comma lists, matches from the repository root, and lets `**` span any number of folders.
 
 ## [0.7.1] - 2026-11-26
