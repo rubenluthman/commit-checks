@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-26
+
 - The visibility check closes GitHub's error response before it reports that it cannot reach GitHub.
 
 ## [0.6.1] - 2026-11-26
