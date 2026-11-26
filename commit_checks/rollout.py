@@ -174,6 +174,10 @@ def process(entry: Dict[str, str], pins: List[Tuple[PinType, Target]], run: Run,
             return Result(name, "blocked", "; ".join(problems))
         planned: List[Planned] = [(ptype, target, ptype.inspect(root, target)) for ptype, target in pins]
         notes = [n for _t, _g, pin in planned for n in pin.notes]
+        for ptype, _t in pins:  # the reader's problems, under every status; a note that already says one is not repeated
+            for text in ptype.read(root).problems:
+                if not any(n.startswith(text) for n in notes):
+                    notes.append(pinreport.problem_note(text))
         for _t, _g, pin in planned:
             if pin.status not in ("blocked", "current", "local", "manual", "update"):
                 raise CheckError("pin type returned an unknown status")

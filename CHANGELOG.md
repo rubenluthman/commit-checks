@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - `roll-out` stops the whole verification process tree, not only the script, when a run ends early or passes its 4-hour limit. A run past the limit is `CHECKS FAIL` with the limit named; `COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT` sets it in seconds.
+- `roll-out` prints the pin reader's problems as `PROBLEM` notes under each result, as `pins` does.
 
 ## [0.6.0] - 2026-11-26
 

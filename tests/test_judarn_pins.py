@@ -1,8 +1,10 @@
 """roll-out pin types for Judarn: npm, a Swift manifest, an Xcode project. Fixtures only; npm is a stub."""
 import json
 import os
+import subprocess
 import sys
 
+from support import env_for
 from test_rollout import RollOutBase, git, read, write
 
 NPM_STUB = """#!/bin/sh
@@ -292,3 +294,59 @@ class TestCombined(JudarnBase):
         self.assertEqual(git(root, "rev-list", "--count", "HEAD"), "3")  # start, pins, one new commit
         self.assertEqual(sorted(git(root, "show", "--name-only", "--format=", "HEAD").splitlines()),
                          ["Package.resolved", "Package.swift", "package-lock.json", "package.json"])
+
+
+class TestProblemNotes(JudarnBase):
+    """roll-out prints the reader's problems as `PROBLEM` notes, worded as `pins` words them, and never says one twice."""
+    CHECK = ""
+
+    def problem_lines(self, text):
+        return [l.strip() for l in text.splitlines() if l.strip().startswith("PROBLEM ")]
+
+    def pins_output(self):
+        env = env_for(extra={"JUDARN_PATH": self.pkg})
+        return subprocess.run([sys.executable, "-m", "commit_checks", "pins", "--list", self.write_list(), "--package", "judarn"],
+                              cwd=self.tmp, capture_output=True, text=True, env=env, timeout=120).stdout
+
+    def test_a_resolved_version_that_differs_is_a_note_equal_to_the_pins_line(self):
+        self.app("swiftapp", {"Package.swift": MANIFEST % 'exact: "1.0.0"', "Package.resolved": RESOLVED % (self.sha["v1.0.1"], "1.0.1")})
+        proc = self.go("judarn", "v1.1.0")
+        self.assertPasses(proc)
+        found = self.problem_lines(proc.stdout)
+        self.assertEqual(found, ["PROBLEM resolved 1.0.1 differs from exact 1.0.0 (Package.swift)"])
+        self.assertEqual(found, self.problem_lines(self.pins_output()))
+        self.assertIn("    PROBLEM resolved", proc.stdout)  # a note: indented under the result line
+
+    def test_a_repository_without_problems_prints_none(self):
+        self.app("swiftapp", {"Package.swift": MANIFEST % 'exact: "1.0.0"', "Package.resolved": RESOLVED % (self.sha["v1.0.0"], "1.0.0")})
+        proc = self.go("judarn", "v1.1.0")
+        self.assertPasses(proc)
+        self.assertEqual(self.problem_lines(proc.stdout), [])
+        self.assertEqual(self.problem_lines(self.pins_output()), [])
+
+    def test_a_local_path_has_its_note_and_no_second_line(self):
+        local = MANIFEST.replace('.package(url: "https://github.com/acme/judarn", %s)', '.package(path: "../../Packages/judarn")')
+        self.app("swiftapp", {"Package.swift": local})
+        proc = self.go("judarn", "v1.1.0")
+        self.assertIn("reaches Judarn by a local path; not edited", proc.stdout)
+        self.assertEqual(self.problem_lines(proc.stdout), [])
+        self.assertTrue(self.problem_lines(self.pins_output()))  # the reader does see it: the note stands for it
+
+    def test_a_local_path_beside_a_remote_one_has_one_line(self):
+        both = MANIFEST.replace('%s),', '%s),\n    .package(path: "../../Packages/judarn"),')
+        self.app("swiftapp", {"Package.swift": both % 'exact: "1.0.0"'})
+        proc = self.go("judarn", "v1.1.0")
+        self.assertIn("reaches Judarn by a local path as well; that one is not edited", proc.stdout)
+        self.assertEqual(self.problem_lines(proc.stdout), [])
+
+    def test_an_npm_local_path_has_its_note_and_no_second_line(self):
+        self.app("web", {"package.json": PACKAGE_JSON % "file:../judarn/platforms/web"})
+        proc = self.go("judarn", "v1.1.0")
+        self.assertIn("package.json reaches Judarn by a local path; not edited", proc.stdout)
+        self.assertEqual(self.problem_lines(proc.stdout), [])
+
+    def test_an_npm_range_has_its_note_and_no_second_line(self):
+        self.app("web", {"package.json": PACKAGE_JSON % "^1.0.0"})
+        proc = self.go("judarn", "v1.1.0")
+        self.assertIn('range "^1.0.0" in package.json, not an exact version; edit it by hand', proc.stdout)
+        self.assertEqual(self.problem_lines(proc.stdout), [])

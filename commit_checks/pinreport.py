@@ -66,6 +66,11 @@ def build(consumers: Consumers, ptypes: List[PinType], entries: Optional[List[di
     return {"format": FORMAT, "consumers": rows, "unlisted": [{"path": p, "loads": loads} for p, loads in unlisted]}
 
 
+def problem_note(text: str) -> str:
+    """One reader problem as a printed note. `pins` and `roll-out` both print it, so the wording stays one."""
+    return "PROBLEM " + text
+
+
 def _text(report: dict) -> str:
     lines = []
     for c in report["consumers"]:
@@ -78,7 +83,7 @@ def _text(report: dict) -> str:
                 lines.append("    %s %s: %s%s" % (f["kind"], f["file"], ("%s %s" % (req["type"], req["version"] or "")).strip() if req else "lock only",
                                                   (", resolved " + f["resolved"]["version"]) if f["resolved"] and f["resolved"]["version"] else ""))
             for pr in pk["problems"]:
-                lines.append("    PROBLEM %s" % pr)
+                lines.append("    " + problem_note(pr))
     for u in report["unlisted"]:
         lines.append("UNLISTED %s loads %s" % (u["path"], ", ".join(u["loads"])))
     return "\n".join(lines) + "\n"

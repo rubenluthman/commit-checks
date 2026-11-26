@@ -161,7 +161,7 @@ class SwiftManifestPin:
         if not found:
             return Pin("manual", "", notes=["Package.swift: the Judarn reference is not an exact version; edit it by hand"])
         old = found.group(2)
-        notes = ["Package.swift also reaches Judarn by a local path; that one is not edited"] if local else []
+        notes = ["Package.swift reaches Judarn by a local path as well; that one is not edited"] if local else []
         want = _version(target.tag)
         files: Dict[str, bytes] = {}
         if old != want:
@@ -351,8 +351,8 @@ class NpmJudarnPin:
         want = _version(target.tag)
         if not re.fullmatch(r"\d+\.\d+\.\d+", spec):
             if spec.startswith(("file:", "link:", "workspace:")) or re.search(r"[/\\]judarn", spec, re.I):
-                return Pin("local", spec, notes=["package.json reaches @judarn/ui by a local path; not edited"])
-            return Pin("manual", spec, notes=['package.json: "%s" is "%s", not an exact version; edit it by hand' % (NPM_PACKAGE, spec)])
+                return Pin("local", spec, notes=["package.json reaches Judarn by a local path; not edited"])
+            return Pin("manual", spec, notes=['range "%s" in package.json, not an exact version; edit it by hand' % spec])
         lock_text = _read_tracked(root, NpmPin.LOCK)
         locked = _lock_version(lock_text, NPM_PACKAGE)
         if spec == want and locked == want:
