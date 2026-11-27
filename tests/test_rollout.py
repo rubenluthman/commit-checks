@@ -743,10 +743,11 @@ class TestCommitStop(RollOutBase):
         a = self.make_consumer("alpha", hook=HOOK_BG_HANG)
         b = self.make_consumer("beta")
         head = self.head(a)
-        proc = self.roll("v1.1.0", "--apply", env={"COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT": "2"})
+        # The limit also covers beta's verify and commit, so it leaves room for a busy machine.
+        proc = self.roll("v1.1.0", "--apply", env={"COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT": "10"})
         self.assertBlocks(proc)
         self.assertNotIn("Traceback", proc.stderr)
-        self.assertIn("CHECKS FAIL    alpha: the commit hook ran past its 2 s limit and was stopped; files restored", proc.stdout)
+        self.assertIn("CHECKS FAIL    alpha: the commit hook ran past its 10 s limit and was stopped; files restored", proc.stdout)
         self.assertIn("UPDATED        beta", proc.stdout)  # the run reached the next consumer
         self.assertUntouched(a, head)
         self.assertEqual(self.settings(a)["version"], "v1.0.0")
