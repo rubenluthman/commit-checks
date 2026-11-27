@@ -124,6 +124,14 @@ class PinType:
         """Return the verified release, or raise CheckError (the command then edits nothing)."""
         raise NotImplementedError
 
+    def clone(self) -> str:
+        """The local clone that holds this package's releases."""
+        raise NotImplementedError
+
+    def resolve_latest(self) -> Target:
+        """The newest release in the local clone, verified on its origin like an explicit tag."""
+        return self.resolve_target(latest_tag(self.clone()))
+
     def inspect(self, root: str, target: Target) -> Pin:
         raise NotImplementedError
 
@@ -153,6 +161,15 @@ def _local_clone(env_var: str, config_key: str, cwd: str, fallback: str = "") ->
         if path and os.path.isdir(path):
             return os.path.realpath(path)
     raise CheckError("no local package clone: set %s or git config --global %s" % (env_var, config_key))
+
+
+def latest_tag(repo: str) -> str:
+    """The newest `vX.Y.Z` tag in a clone, by version and not by date. No such tag raises CheckError."""
+    listing = gitutil.run(["tag", "--list", "v*"], repo).stdout.decode("utf-8", "replace").split()
+    versions = [(tuple(int(n) for n in t[1:].split(".")), t) for t in listing if TAG.match(t)]
+    if not versions:
+        raise CheckError("the package clone has no release tag of the form v1.2.3")
+    return max(versions)[1]
 
 
 def _verified_tag(repo: str, tag: str) -> str:
@@ -207,6 +224,9 @@ class CommitChecksPin(PinType):
         """The local clone that holds the package: COMMIT_CHECKS_PATH, the global git setting, or this source tree."""
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         return _local_clone("COMMIT_CHECKS_PATH", "commit-checks.path", here, here if os.path.exists(os.path.join(here, ".git")) else "")
+
+    def clone(self) -> str:
+        return self.package_repo()
 
     def resolve_target(self, tag: str) -> Target:
         repo = self.package_repo()
@@ -274,9 +294,12 @@ class HouseStylePin(PinType):
             return Reading()
         return Reading([form("vale", self.FILE, {"type": "exact", "version": found.group("tag")}, None, True)])
 
-    def resolve_target(self, tag: str) -> Target:
+    def clone(self) -> str:
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        repo = _local_clone("HOUSE_STYLE_PATH", "house-style.path", here)
+        return _local_clone("HOUSE_STYLE_PATH", "house-style.path", here)
+
+    def resolve_target(self, tag: str) -> Target:
+        repo = self.clone()
         return Target(self.name, tag, _verified_tag(repo, tag), repo)
 
     def inspect(self, root: str, target: Target) -> Pin:

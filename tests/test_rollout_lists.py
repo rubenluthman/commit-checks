@@ -82,11 +82,6 @@ class TestListRules(JudarnBase):
         self.assertPasses(proc)
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "seen-pins.json")))
 
-    def test_a_run_with_a_gated_package_takes_exactly_one_pin(self):
-        self.app("web", SWIFT)
-        self.assertErrors(self.roll(None, list_path=self.gate_list(), pins={"judarn": "v1.1.0", "commit-checks": "v1.1.0"},
-                                    env={"JUDARN_PATH": self.pkg}), "exactly one --pin")
-
     def test_pins_placeholder_is_the_report_for_what_roll_out_acts_on(self):
         self.make_consumer("alpha")
         self.app("web", SWIFT)

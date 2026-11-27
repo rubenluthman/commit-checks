@@ -166,7 +166,8 @@ class RollOutBase(Base):
         return root
 
     def write_list(self, extra=None, consumers=None):
-        data = {"consumers": [{"name": c["name"], "path": os.path.relpath(c["path"], self.tmp), "packages": c["packages"]}
+        data = {"consumers": [dict({"name": c["name"], "path": os.path.relpath(c["path"], self.tmp), "packages": c["packages"]},
+                                   **({"checks": c["checks"]} if c.get("checks") else {}))
                               for c in (self.consumers if consumers is None else consumers)]}
         data.update(extra or {})
         path = os.path.join(self.tmp, "list.json")
@@ -626,13 +627,6 @@ class TestSeveralPins(RollOutBase):
         self.assertUntouched(root, start)
         self.assertEqual(self.settings(root)["version"], "v1.0.0")
         self.assertEqual(read(os.path.join(root, ".vale.ini")), VALE % "v0.3.4")
-
-    def test_gate_with_two_pins_is_an_error(self):
-        self.make_consumer("alpha")
-        write(os.path.join(self.tmp, "gate.py"), GATE)
-        write(os.path.join(self.tmp, "gate.json"), "{}")
-        lst = self.write_list({"gates": {"commit-checks": [sys.executable, "gate.py", "gate.json", "{tag}"]}})
-        self.assertErrors(self.roll(None, list_path=lst, pins=self.BOTH), "exactly one --pin")
 
     def test_bad_pin_arguments_are_errors(self):
         self.make_consumer("alpha")

@@ -1,6 +1,6 @@
 """roll-out: move every consumer of the shared packages to release tags.
 
-Dry run unless --apply. Exit 0: every consumer is current, updated or a local-path reference.
+Dry run unless --apply. Exit 0: every consumer is current, updated, waiting for its next version or a local-path reference.
 Exit 1: some consumer was skipped, held, blocked, interrupted or failed its checks, or a repository that loads
 a package is missing from the list. Exit 2: the command could not run, or the run was stopped by a signal.
 
@@ -26,9 +26,9 @@ from . import gitutil
 from .errors import CheckError
 from . import pinreport
 from .consumerlist import Consumers, load_list, not_found_text, not_listed_text
-from .pins import PIN_TYPES, Pin, PinType, Target
+from .pins import LOADER_FILE, PIN_TYPES, Pin, PinType, Target
 
-OK = {"updated", "would update", "current", "local"}
+OK = {"updated", "would update", "current", "local", "waits"}
 COMMIT_TIMEOUT = 900  # the consumer's own hooks run during the commit
 VERIFY_TIMEOUT = 4 * 3600  # a consumer's own verification script, which may wait for the machine-wide lock
 VERIFY_TIMEOUT_ENV = "COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT"  # seconds; a test seam
@@ -36,6 +36,8 @@ WATCHER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "verifywatch.
 STOP_GRACE = 10  # seconds between TERM and KILL for a verification's process group
 BUMP_HINT = "bump the version"
 VERIFY_SCRIPT = "scripts/verify_commit.sh"
+CHEAP_PINS = ("commit-checks", "house-style")  # check tools: `commit-checks verify` runs every check a move of them can affect
+QUICK_TIMEOUT = 600  # seconds for `commit-checks verify` and for each command of a `checks` entry
 COLLAB_LINE = "Collaborative: use branches and pull requests."
 PR_BRANCH = "ci/shared-pins"
 RECORD = "commit-checks-roll-out.json"  # in the repository's git folder while roll-out edits there
@@ -177,6 +179,9 @@ class Run:
         self.out = sys.stdout
         self.started: Dict[str, float] = {}  # repository name -> monotonic start, for repositories roll-out edited
 
+    def log_path(self, name: str) -> str:
+        return os.path.join(self.log_dir, _log_name(name))
+
     def begin(self, name: str, has_script: bool) -> None:
         """Print the START line: roll-out is about to edit this repository, the slow part."""
         if not self.apply:
@@ -229,8 +234,18 @@ def undeclared(root: str, others: List[PinType]) -> List[str]:
     return [not_listed_text(p.name) for p in others if p.detect(root)]
 
 
-def process(entry: Dict[str, str], pins: List[Tuple[PinType, Target]], run: Run, held: Optional[str],
+def _with_held(result: Result, held_pins: List[Planned], held: Dict[str, str]) -> Result:
+    """A consumer whose other pins moved still needs attention for the ones that were held."""
+    if held_pins and result.status in ("updated", "would update"):
+        why = ", ".join("%s (%s)" % (t.name, held[t.name]) for t, _g, _p in held_pins)
+        return Result(result.name, "held", "%s; held: %s" % (result.detail, why), result.notes)
+    return result
+
+
+def process(entry: dict, pins: List[Tuple[PinType, Target]], run: Run, held: Optional[Dict[str, str]],
             others: Optional[List[PinType]] = None) -> Result:
+    """`held` maps a package name to the reason this consumer's move of it is held; its other pins still move."""
+    held = held or {}
     name, root = entry["name"], entry["path"]
     if not os.path.isdir(root):
         return Result(name, "blocked", "folder not found")
@@ -266,8 +281,10 @@ def process(entry: Dict[str, str], pins: List[Tuple[PinType, Target]], run: Run,
         collab = _is_collaborative(root)
         if collab and _git(root, "show-ref", "--verify", "-q", "refs/heads/" + PR_BRANCH, ok=(0, 1)).returncode == 0:
             return Result(name, "skipped", "branch %s already exists" % PR_BRANCH, notes)
-        if held is not None:
-            return Result(name, "held", held, notes)
+        held_pins = [x for x in updates if x[0].name in held]
+        updates = [x for x in updates if x[0].name not in held]
+        if not updates:
+            return Result(name, "held", "; ".join(sorted({held[t.name] for t, _g, _p in held_pins})), notes)
         stuck = [pin.detail for _t, _g, pin in updates if pin.status == "blocked"]
         if stuck:
             return Result(name, "blocked", "; ".join(stuck), notes)
@@ -287,8 +304,8 @@ def process(entry: Dict[str, str], pins: List[Tuple[PinType, Target]], run: Run,
         verb = "; ".join("%s %s -> %s" % (t.name, pin.current, g.tag) for t, g, pin in updates)
         if not run.apply:
             where = ", opens a pull request" if collab else ""
-            return Result(name, "would update", "%s (%s%s)" % (verb, ", ".join(paths), where), notes)
-        return _apply(name, root, updates, run, default, collab, verb, notes)
+            return _with_held(Result(name, "would update", "%s (%s%s)" % (verb, ", ".join(paths), where), notes), held_pins, held)
+        return _with_held(_apply(entry, root, updates, run, default, collab, verb, notes), held_pins, held)
     except (CheckError, OSError, subprocess.SubprocessError) as exc:
         return Result(name, "blocked", str(exc))
 
@@ -512,7 +529,7 @@ def _verify(name: str, root: str, run: Run) -> Tuple[int, str, str]:
     os.makedirs(run.log_dir, exist_ok=True)
     log = os.path.join(run.log_dir, _log_name(name))
     timed_out = False
-    with open(log, "wb") as fh:
+    with open(log, "ab") as fh:  # appended: the quick checks that ran first are in this log already
         # The watcher leads the new group and stops it if this process dies: a SIGKILL cannot be caught here.
         # close_fds (the default) keeps the pipe's write end in this process alone.
         proc = subprocess.Popen([sys.executable, "-I", WATCHER, str(STOP_GRACE), "./" + VERIFY_SCRIPT], cwd=root,
@@ -534,15 +551,55 @@ def _verify(name: str, root: str, run: Run) -> Tuple[int, str, str]:
     return code, output, log
 
 
-def _apply(name: str, root: str, updates: List[Planned], run: Run, default: str, collab: bool, verb: str,
+def _logged(root: str, argv: List[str], log: str) -> Tuple[int, str]:
+    """Run one short command in the consumer, append its output to the log. A command that cannot run or runs past
+    QUICK_TIMEOUT is a failure, never a pass."""
+    try:
+        proc = subprocess.run(argv, cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              timeout=QUICK_TIMEOUT, env=gitutil.clean_env())
+        code, output = proc.returncode, proc.stdout.decode("utf-8", "replace")
+    except subprocess.TimeoutExpired:
+        code, output = -1, "ran past its %s limit and was stopped\n" % _limit_text(QUICK_TIMEOUT)
+    except OSError as exc:
+        code, output = 127, "cannot run %s: %s\n" % (argv[0], exc)
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    with open(log, "ab") as fh:
+        fh.write(("$ %s\n%s" % (" ".join(argv), output)).encode("utf-8"))
+        if output and not output.endswith("\n"):
+            fh.write(b"\n")
+    return code, output
+
+
+def _quick_checks(name: str, root: str, run: Run, commands: List[Tuple[str, List[str]]], notes: List[str],
+                  have_loader: bool) -> Optional[Result]:
+    """`commit-checks verify` first, then each `checks` command. None when all pass. `waits` means the version
+    guard wants a bump, so the consumer takes this release with its next version."""
+    log = run.log_path(name)
+    if have_loader:
+        code, output = _logged(root, ["./" + LOADER_FILE, "verify"], log)
+        if code != 0:
+            if BUMP_HINT in output:
+                return Result(name, "waits", "waits for its next version", notes)
+            return Result(name, "checks fail", "%s verify failed (exit %d); files restored; log: %s" % (LOADER_FILE, code, log),
+                          [_tail(output)] + notes)
+    for package, argv in commands:
+        code, output = _logged(root, argv, log)
+        if code != 0:
+            return Result(name, "checks fail", "the %s check failed (exit %d); files restored; log: %s" % (package, code, log),
+                          [_tail(output)] + notes)
+    return None
+
+
+def _apply(entry: dict, root: str, updates: List[Planned], run: Run, default: str, collab: bool, verb: str,
            notes: List[str]) -> Result:
+    name = entry["name"]
     start = _git(root, "rev-parse", "HEAD").stdout.decode().strip()
     paths = sorted(rel for _t, _g, pin in updates for rel in pin.files)
     record = RunRecord.create(root, {
         "format": RECORD_FORMAT, "start": start, "default": default, "collab": collab, "files": paths,
         "subjects": [t.subject(g.tag) for t, g, _p in updates], "pid": os.getpid(), "started": time.time()})
     try:
-        return _apply_recorded(name, root, updates, run, default, collab, verb, notes, start, paths, record)
+        return _apply_recorded(entry, root, updates, run, default, collab, verb, notes, start, paths, record)
     finally:
         record.close()
 
@@ -552,19 +609,40 @@ def _stopped(exc: BaseException, detail: str) -> None:
         exc.detail = detail  # type: ignore[attr-defined]
 
 
-def _apply_recorded(name: str, root: str, updates: List[Planned], run: Run, default: str, collab: bool, verb: str,
+def _verification_plan(entry: dict, updates: List[Planned], paths: List[str]) -> Tuple[bool, List[Tuple[str, List[str]]]]:
+    """(run the full script, `checks` commands to run instead). A move of only check tools needs `commit-checks verify`
+    alone. Any other pin needs the full script, unless every such pin has a `checks` entry; a changed loader always
+    needs the full script."""
+    checks = entry.get("checks", {})
+    others = [t.name for t, _g, _p in updates if t.name not in CHEAP_PINS]
+    if LOADER_FILE in paths or any(n not in checks for n in others):
+        return True, []
+    return False, [(n, checks[n]) for n in others]
+
+
+def _apply_recorded(entry: dict, root: str, updates: List[Planned], run: Run, default: str, collab: bool, verb: str,
                     notes: List[str], start: str, paths: List[str], record: RunRecord) -> Result:
+    name = entry["name"]
     failure: Optional[Result] = None
     phase = "edit"
-    run.begin(name, os.path.isfile(os.path.join(root, VERIFY_SCRIPT)))
+    have_loader = os.path.isfile(os.path.join(root, LOADER_FILE))
+    have_script = os.path.isfile(os.path.join(root, VERIFY_SCRIPT))
+    full, commands = _verification_plan(entry, updates, paths)
+    run.begin(name, have_loader or (full and have_script))
     try:
         if collab:
             _git(root, "checkout", "-q", "-b", PR_BRANCH)
         for _t, _g, pin in updates:
             pin.write(root)
         _git(root, "add", "--", *paths)  # the consumer's verification scans what is staged
-        if os.path.isfile(os.path.join(root, VERIFY_SCRIPT)):
-            phase = "verify"
+        phase = "verify"
+        os.makedirs(run.log_dir, exist_ok=True)
+        open(run.log_path(name), "wb").close()  # a log folder reused from an earlier run starts empty
+        if not have_loader:
+            notes = notes + ["no %s; only the commit hooks checked this" % LOADER_FILE]
+        failure = _quick_checks(name, root, run, commands, notes, have_loader)
+        code = 0
+        if failure is None and full and have_script:
             try:
                 code, output, log = _verify(name, root, run)
             except VerifyTimeout as late:
@@ -576,10 +654,10 @@ def _apply_recorded(name: str, root: str, updates: List[Planned], run: Run, defa
                 status = "needs a version bump" if BUMP_HINT in output else "checks fail"
                 failure = Result(name, status, "%s failed (exit %d); files restored; log: %s" % (VERIFY_SCRIPT, code, log),
                                  [_tail(output)] + notes)
-        else:
+        elif failure is None and full:
             notes = notes + ["no %s; only the commit hooks checked this" % VERIFY_SCRIPT]
+        phase = "commit"
         if failure is None:
-            phase = "commit"
             _git(root, "reset", "-q", "HEAD", "--", *paths)
             for ptype, target, pin in updates:
                 subject = ptype.subject(target.tag)
@@ -656,8 +734,10 @@ def _open_pull_request(name: str, root: str, updates: List[Planned], default: st
 def parse(argv: List[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="commit-checks roll-out", description="Move every consumer of the shared packages to release tags (dry run unless --apply).")
     p.add_argument("--list", required=True, help="private JSON file naming the consumers")
-    p.add_argument("--pin", action="append", required=True, metavar="NAME=vX.Y.Z",
-                   help="package and release tag to move to; repeat for several (%s)" % ", ".join(sorted(PIN_TYPES)))
+    p.add_argument("--pin", action="append", required=True, metavar="NAME=vX.Y.Z|latest",
+                   help="package and release tag to move to, or `latest` for the newest vX.Y.Z tag in its clone; "
+                        "repeat for several (%s)" % ", ".join(sorted(PIN_TYPES)))
+    p.add_argument("--only", action="append", default=[], metavar="NAME", help="act only on this listed consumer; repeat for several")
     p.add_argument("--apply", action="store_true", help="edit, verify and commit (default: report only)")
     p.add_argument("--push", action="store_true", help="push each new commit to the default branch, or open a pull request for a collaborative project (needs --apply)")
     p.add_argument("--log-dir", metavar="DIR", help="where each consumer's verification output goes (default: a new temporary folder)")
@@ -668,7 +748,7 @@ def parse(argv: List[str]) -> argparse.Namespace:
     for item in ns.pin:
         name, sep, tag = item.partition("=")
         if not sep or name not in PIN_TYPES or not tag:
-            p.error("--pin needs NAME=vX.Y.Z with NAME one of: %s" % ", ".join(sorted(PIN_TYPES)))
+            p.error("--pin needs NAME=vX.Y.Z or NAME=latest with NAME one of: %s" % ", ".join(sorted(PIN_TYPES)))
         if name in pins:
             p.error("--pin names %s twice" % name)
         pins[name] = tag
@@ -707,23 +787,27 @@ def _main(ns: argparse.Namespace) -> int:
     if ns.push and not ns.apply:
         raise CheckError("--push needs --apply")
     consumers = load_list(ns.list)
-    gated = [n for n in ns.pins if n in consumers.gates]
-    if gated and len(ns.pins) != 1:
-        raise CheckError("a run that includes a gated package takes exactly one --pin")
     names = {e["name"] for e in consumers.entries}
+    for n in ns.only:
+        if n not in names:
+            raise CheckError("--only names a consumer that is not listed: " + n)
     for n in ns.approve:
         if n not in names:
             raise CheckError("--approve names a consumer that is not listed: " + n)
     # Every release is confirmed on its remote before anything is touched.
-    pins = [(PIN_TYPES[n], PIN_TYPES[n].resolve_target(tag)) for n, tag in sorted(ns.pins.items())]
+    pins = [(PIN_TYPES[n], PIN_TYPES[n].resolve_latest() if tag == "latest" else PIN_TYPES[n].resolve_target(tag))
+            for n, tag in sorted(ns.pins.items())]
     unlisted = pinreport.find_unlisted(consumers, [p[0] for p in pins])
 
     plan = []  # (entry, pins to work on, packages the entry does not name)
+    unselected = 0
     for entry in consumers.entries:
+        if ns.only and entry["name"] not in ns.only:
+            unselected += 1
+            continue
         mine = [(p, t) for p, t in pins if not _is_own_clone(entry, t)]
         plan.append((entry, [(p, t) for p, t in mine if p.name in entry["packages"]],
                      [p for p, _t in mine if p.name not in entry["packages"]]))
-    acting = [entry for entry, active, _o in plan if active]
 
     log_dir = ""
     if ns.apply:
@@ -735,15 +819,16 @@ def _main(ns: argparse.Namespace) -> int:
     if log_dir:
         _emit(out, "verification logs: %s\n" % log_dir)
 
-    decisions: Dict[str, Dict[str, str]] = {}
-    gate_error = ""
-    if gated:
-        ptype, target = pins[0]
+    decisions: Dict[str, Dict[str, Dict[str, str]]] = {}  # package -> consumer -> decision
+    gate_errors: Dict[str, str] = {}
+    for ptype, target in pins:  # each gated package runs its own gate once, for the consumers that move it
+        if ptype.name not in consumers.gates:
+            continue
         try:
-            report = pinreport.build(consumers, [ptype], acting, unlisted)
-            decisions = run_gate(consumers, ptype.name, target.tag, report)
+            moving = [entry for entry, active, _o in plan if any(p.name == ptype.name for p, _t in active)]
+            decisions[ptype.name] = run_gate(consumers, ptype.name, target.tag, pinreport.build(consumers, [ptype], moving, unlisted))
         except CheckError as exc:
-            gate_error = str(exc)
+            gate_errors[ptype.name] = str(exc)
 
     results: List[Result] = []
     idle = 0
@@ -774,16 +859,18 @@ def _main(ns: argparse.Namespace) -> int:
                 else:
                     idle += 1
                 continue
-            held = None
-            if gated and entry["name"] not in ns.approve:
-                if gate_error:
-                    held = gate_error
-                else:
-                    d = decisions.get(entry["name"])
-                    if not isinstance(d, dict) or d.get("decision") not in ("go", "hold"):
-                        held = "the gate did not give a go or hold for it"
-                    elif d["decision"] == "hold":
-                        held = "gate: " + str(d.get("reason", "no reason given"))
+            held: Dict[str, str] = {}
+            for ptype, _t in active:
+                if ptype.name not in consumers.gates or entry["name"] in ns.approve:
+                    continue
+                if ptype.name in gate_errors:
+                    held[ptype.name] = gate_errors[ptype.name]
+                    continue
+                d = decisions[ptype.name].get(entry["name"])
+                if not isinstance(d, dict) or d.get("decision") not in ("go", "hold"):
+                    held[ptype.name] = "the gate did not give a go or hold for it"
+                elif d["decision"] == "hold":
+                    held[ptype.name] = "gate: " + str(d.get("reason", "no reason given"))
             finish(process(entry, active, run, held, others))
         except KeyboardInterrupt as exc:  # the repository in hand is already put back, or was never touched
             stopped = exc
@@ -801,6 +888,8 @@ def _main(ns: argparse.Namespace) -> int:
     bad = [r for r in results if r.status not in OK]
     if idle:
         _emit(out, "%d listed %s not name %s; not touched.\n" % (idle, "repository does" if idle == 1 else "repositories do", " or ".join(sorted(ns.pins))))
+    if unselected:
+        _emit(out, "%d listed %s not selected by --only; not touched.\n" % (unselected, "repository was" if unselected == 1 else "repositories were"))
     attention = [r.name for r in bad] + [os.path.relpath(path, consumers.scan_root) for path, _l in unlisted]
     _emit(out, "%d consumer(s); %d need attention%s.\n" % (len(results), len(attention), (": " + ", ".join(attention)) if attention else ""))
     return 1 if bad or unlisted else 0

@@ -17,7 +17,7 @@ USAGE = """usage: commit-checks MODE
   ci                    verify, for CI; scans COMMIT_CHECKS_RANGE too when set
   scan-archive FILE...  scan a release archive (tar, tgz or zip) before it is published
   history               scan the whole history (every commit, message, author and tag), as for a repository about to go public
-  roll-out --list FILE --pin NAME=vX.Y.Z ... [--apply] [--push] [--log-dir DIR] [--approve NAME ...]
+  roll-out --list FILE --pin NAME=vX.Y.Z|latest ... [--only NAME ...] [--apply] [--push] [--log-dir DIR] [--approve NAME ...]
                         move every listed consumer to release tags of the shared packages
                         (commit-checks, house-style, judarn); dry run unless --apply
   pins --list FILE --package NAME ... [--json]

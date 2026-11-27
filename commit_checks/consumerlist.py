@@ -3,8 +3,11 @@
 {
   "scanRoot": "folder to scan for repositories that load a package but are not listed",
   "gates": {"<package>": ["command", "{tag}", "{pins}"]},
-  "consumers": [{"name": "...", "path": "...", "packages": ["commit-checks", "judarn"]}]
+  "consumers": [{"name": "...", "path": "...", "packages": ["commit-checks", "judarn"],
+                 "checks": {"<package>": ["command", "arg"]}}]
 }
+
+A consumer's optional `checks` gives, per package, a cheaper command to run in place of the full verification.
 """
 from __future__ import annotations
 
@@ -54,7 +57,15 @@ def load_list(path: str) -> Consumers:
         for pkg in packages:
             if pkg not in PIN_TYPES:
                 raise CheckError("consumer %s names an unknown package %s (known: %s)" % (name, pkg, ", ".join(sorted(PIN_TYPES))))
-        entries.append({"name": name, "path": resolve(item["path"]), "packages": sorted(set(packages))})
+        checks = item.get("checks", {})
+        if not isinstance(checks, dict):
+            raise CheckError("consumer %s: checks must be an object keyed by package name" % name)
+        for pkg, cmd in checks.items():
+            if pkg not in PIN_TYPES:
+                raise CheckError("consumer %s: checks names an unknown package %s" % (name, pkg))
+            if not (isinstance(cmd, list) and cmd and all(isinstance(a, str) and a for a in cmd)):
+                raise CheckError("consumer %s: the checks command for %s must be a list of command arguments" % (name, pkg))
+        entries.append({"name": name, "path": resolve(item["path"]), "packages": sorted(set(packages)), "checks": checks})
     scan = data.get("scanRoot")
     if scan is not None and not (isinstance(scan, str) and scan):
         raise CheckError("scanRoot must be a folder name")

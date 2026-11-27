@@ -845,6 +845,9 @@ class JudarnPin(PinType):
     def read(self, root: str) -> Reading:
         return read_judarn(root)
 
+    def clone(self) -> str:
+        return _judarn_clone(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
     def resolve_target(self, tag: str) -> Target:
         return _resolve_judarn(tag, "judarn")
 
