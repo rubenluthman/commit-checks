@@ -29,8 +29,7 @@ from .consumerlist import Consumers, load_list, not_found_text, not_listed_text
 from .pins import LOADER_FILE, PIN_TYPES, Pin, PinType, Target
 
 OK = {"updated", "would update", "current", "local", "range", "waits"}
-COMMIT_TIMEOUT = 900  # the consumer's own hooks run during the commit
-VERIFY_TIMEOUT = 4 * 3600  # a consumer's own verification script, which may wait for the machine-wide lock
+VERIFY_TIMEOUT = 4 * 3600  # a consumer's verification script and each of its commits, which may wait for the machine-wide lock
 VERIFY_TIMEOUT_ENV = "COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT"  # seconds; a test seam
 WATCHER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "verifywatch.py")
 STOP_GRACE = 10  # seconds between TERM and KILL for a verification's process group
@@ -525,29 +524,45 @@ def _stop_group_now(proc: "subprocess.Popen") -> None:
         raise CheckError("could not stop the verification script")
 
 
-def _verify(name: str, root: str, run: Run) -> Tuple[int, str, str]:
-    """Run the consumer's verify_commit.sh once, in its own process group. Returns (exit code, output, log path).
-    A run past its limit raises VerifyTimeout."""
-    os.makedirs(run.log_dir, exist_ok=True)
-    log = os.path.join(run.log_dir, _log_name(name))
+def _watched(argv: List[str], root: str, log: str, limit: float, env: Optional[dict]) -> Tuple[int, str, bool]:
+    """Run one command in the consumer under the watcher, in its own process group, with its output appended to `log`.
+    Returns (exit code, the output this command wrote, timed out). A run past `limit` is stopped as a whole and counts
+    as -1. The group is always stopped on the way out, so a child the command left behind, or an exception, never
+    leaves a test run waiting for the machine-wide lock."""
+    os.makedirs(os.path.dirname(log), exist_ok=True)
     timed_out = False
-    with open(log, "ab") as fh:  # appended: the quick checks that ran first are in this log already
+    with open(log, "ab") as fh:  # appended: the commands that ran first are in this log already
+        fh.write(("$ %s\n" % " ".join(argv)).encode("utf-8"))
+        fh.flush()
+        start = fh.tell()
         # The watcher leads the new group and stops it if this process dies: a SIGKILL cannot be caught here.
         # close_fds (the default) keeps the pipe's write end in this process alone.
-        proc = subprocess.Popen([sys.executable, "-I", WATCHER, str(STOP_GRACE), "./" + VERIFY_SCRIPT], cwd=root,
+        proc = subprocess.Popen([sys.executable, "-I", WATCHER, str(STOP_GRACE)] + argv, cwd=root, env=env,
                                 stdin=subprocess.PIPE, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
         try:
-            code = proc.wait(timeout=run.verify_timeout)
+            code = proc.wait(timeout=limit)
         except subprocess.TimeoutExpired:
             timed_out = True
             code = -1
         finally:
             try:
-                _stop_group(proc)  # on a timeout, on any exception, and for children a finished script left behind
+                _stop_group(proc)  # on a timeout, on any exception, and for children a finished command left behind
             finally:
                 proc.stdin.close()
-    with open(log, encoding="utf-8", errors="replace") as fh:
-        output = fh.read()
+    with open(log, "rb") as rd:
+        rd.seek(start)
+        output = rd.read().decode("utf-8", "replace")
+    if output and not output.endswith("\n"):
+        with open(log, "ab") as fh:
+            fh.write(b"\n")
+    return code, output, timed_out
+
+
+def _verify(name: str, root: str, run: Run) -> Tuple[int, str, str]:
+    """Run the consumer's verify_commit.sh once, in its own process group. Returns (exit code, output, log path).
+    A run past its limit raises VerifyTimeout."""
+    log = run.log_path(name)
+    code, output, timed_out = _watched(["./" + VERIFY_SCRIPT], root, log, run.verify_timeout, None)
     if timed_out:
         raise VerifyTimeout(run.verify_timeout, output, log)
     return code, output, log
@@ -556,19 +571,12 @@ def _verify(name: str, root: str, run: Run) -> Tuple[int, str, str]:
 def _logged(root: str, argv: List[str], log: str) -> Tuple[int, str]:
     """Run one short command in the consumer, append its output to the log. A command that cannot run or runs past
     QUICK_TIMEOUT is a failure, never a pass."""
-    try:
-        proc = subprocess.run(argv, cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              timeout=QUICK_TIMEOUT, env=gitutil.clean_env())
-        code, output = proc.returncode, proc.stdout.decode("utf-8", "replace")
-    except subprocess.TimeoutExpired:
-        code, output = -1, "ran past its %s limit and was stopped\n" % _limit_text(QUICK_TIMEOUT)
-    except OSError as exc:
-        code, output = 127, "cannot run %s: %s\n" % (argv[0], exc)
-    os.makedirs(os.path.dirname(log), exist_ok=True)
-    with open(log, "ab") as fh:
-        fh.write(("$ %s\n%s" % (" ".join(argv), output)).encode("utf-8"))
-        if output and not output.endswith("\n"):
-            fh.write(b"\n")
+    code, output, timed_out = _watched(argv, root, log, QUICK_TIMEOUT, gitutil.clean_env())
+    if timed_out:
+        text = "ran past its %s limit and was stopped\n" % _limit_text(QUICK_TIMEOUT)
+        with open(log, "ab") as fh:
+            fh.write(text.encode("utf-8"))
+        output += text
     return code, output
 
 
@@ -664,10 +672,13 @@ def _apply_recorded(entry: dict, root: str, updates: List[Planned], run: Run, de
             for ptype, target, pin in updates:
                 subject = ptype.subject(target.tag)
                 _git(root, "add", "--", *sorted(pin.files))
-                proc = subprocess.run(["git", "commit", "-q", "-m", subject], cwd=root, stdout=subprocess.PIPE,
-                                      stderr=subprocess.STDOUT, timeout=COMMIT_TIMEOUT, env=gitutil.clean_env())
-                output = proc.stdout.decode("utf-8", "replace")
-                if proc.returncode != 0:
+                code, output, late = _watched(["git", "commit", "-q", "-m", subject], root, run.log_path(name),
+                                              run.verify_timeout, gitutil.clean_env())
+                if late:
+                    failure = Result(name, "checks fail", "the commit hook ran past its %s limit and was stopped; files restored; log: %s"
+                                     % (_limit_text(run.verify_timeout), run.log_path(name)), [_tail(output)] + notes)
+                    break
+                if code != 0:
                     status = "needs a version bump" if BUMP_HINT in output else "blocked"
                     detail = "the commit hook refused the pin" if status != "blocked" else "the commit failed"
                     failure = Result(name, status, detail + "; files restored", [_tail(output)] + notes)

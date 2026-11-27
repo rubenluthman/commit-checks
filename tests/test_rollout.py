@@ -21,6 +21,8 @@ VERIFY_BUMP = '#!/bin/sh\necho "code changed under the released tag; bump the ve
 VERIFY_FAIL = '#!/bin/sh\necho "test suite exploded"\nexit 1\n'
 # Starts a background child, as a real verify run does through heavy-run, and records its pid.
 VERIFY_BG_HANG = '#!/bin/sh\nsleep 300 &\necho $! > .git/bg-pid\necho started > .git/verify-started\nwait\n'
+HOOK_BG_HANG = '#!/bin/sh\nsleep 300 &\necho $! > .git/bg-pid\nwait\n'
+HOOK_BG_LEAVE = '#!/bin/sh\nsleep 300 &\necho $! > .git/bg-pid\nexit 0\n'
 VERIFY_BG_LEAVE = '#!/bin/sh\nsleep 300 &\necho $! > .git/bg-pid\nexit 0\n'
 GH_STUB = '#!/bin/sh\necho "$@" >> "$GH_LOG"\necho https://example.com/acme/repo/pull/7\nexit 0\n'
 GH_FAIL = '#!/bin/sh\necho "gh broke" >&2\nexit 1\n'
@@ -727,6 +729,39 @@ class TestVerifyStop(RollOutBase):
         for bad in ("soon", "0", "-5"):
             self.assertErrors(self.roll("v1.1.0", "--apply", env={"COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT": bad}),
                               "COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT")
+
+
+class TestCommitStop(RollOutBase):
+    CHECK = ""
+
+    def bg_pid(self, root):
+        path = os.path.join(root, ".git", "bg-pid")
+        wait_until(self, lambda: os.path.isfile(path) and read(path).strip(), "the hook's background pid")
+        return int(read(path).strip())
+
+    def test_a_commit_hook_past_its_limit_is_checks_fail_and_the_run_goes_on(self):
+        a = self.make_consumer("alpha", hook=HOOK_BG_HANG)
+        b = self.make_consumer("beta")
+        head = self.head(a)
+        proc = self.roll("v1.1.0", "--apply", env={"COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT": "2"})
+        self.assertBlocks(proc)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("CHECKS FAIL    alpha: the commit hook ran past its 2 s limit and was stopped; files restored", proc.stdout)
+        self.assertIn("UPDATED        beta", proc.stdout)  # the run reached the next consumer
+        self.assertUntouched(a, head)
+        self.assertEqual(self.settings(a)["version"], "v1.0.0")
+        self.assertEqual(self.settings(b)["version"], "v1.1.0")
+        pid = self.bg_pid(a)
+        wait_until(self, lambda: not pid_alive(pid), "the hook's background child to be gone")
+
+    def test_a_commit_hook_under_its_limit_is_updated_and_leaves_no_child(self):
+        a = self.make_consumer("alpha", hook=HOOK_BG_LEAVE)
+        proc = self.roll("v1.1.0", "--apply", env={"COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT": "60"})
+        self.assertPasses(proc)
+        self.assertIn("UPDATED        alpha", proc.stdout)
+        self.assertEqual(self.settings(a)["version"], "v1.1.0")
+        pid = self.bg_pid(a)
+        wait_until(self, lambda: not pid_alive(pid), "the hook's background child to be gone")
 
 
 class TestLiveOutput(RollOutBase):

@@ -6,7 +6,7 @@ import sys
 
 from test_judarn_pins import JudarnBase
 from judarn_rows import swift_text
-from test_rollout import LOADER_V1, VERIFY_FAIL, VERIFY_OK, git, read, write
+from test_rollout import LOADER_V1, VERIFY_FAIL, VERIFY_OK, git, pid_alive, read, wait_until, write
 
 LOADER_BUMP = '#!/usr/bin/env python3\nimport sys\nprint("code changed under the released tag v1.0.0; bump the version")\nsys.exit(1)\n'
 LOADER_BROKEN = '#!/usr/bin/env python3\nimport sys\nprint("a check exploded")\nsys.exit(1)\n'
@@ -181,6 +181,17 @@ class TestChecksEntry(FlowBase):
     def command(self, root, fail):
         script = "import sys; open(%r, 'a').write('ran\\n'); sys.exit(%d)" % (os.path.join(root, ".git/cheap-runs"), 3 if fail else 0)
         return [sys.executable, "-c", script]
+
+    def test_a_checks_command_leaves_no_background_child(self):
+        a = self.both("alpha", verify=VERIFY_OK)
+        pid_file = os.path.join(a, ".git", "check-bg-pid")
+        script = ("import subprocess, sys; p = subprocess.Popen(['sleep', '300']); open(%r, 'w').write(str(p.pid)); sys.exit(0)"
+                  % pid_file)
+        self.consumers[-1]["checks"] = {"judarn": [sys.executable, "-c", script]}
+        proc = self.judarn_roll("--apply", pins={"judarn": "v1.1.0"})
+        self.assertPasses(proc)
+        pid = int(read(pid_file))
+        wait_until(self, lambda: not pid_alive(pid), "the check's background child to be gone")
 
     def test_a_checks_entry_replaces_the_full_script(self):
         a = self.both("alpha", verify=VERIFY_FAIL)  # the full script would fail the run

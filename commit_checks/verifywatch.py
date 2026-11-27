@@ -1,10 +1,10 @@
-"""Runs a consumer's verification script for roll-out, and stops it if roll-out dies.
+"""Runs one of a consumer's commands (verification script, quick check, commit) for roll-out, and stops it if roll-out dies.
 
-Started by roll-out as `python verifywatch.py GRACE SCRIPT` in a new session, so this process leads the process group
+Started by roll-out as `python verifywatch.py GRACE ARGV...` in a new session, so this process leads the process group
 the script and its children join. Roll-out holds the write end of this process's standard input. When that end closes
-before the script ends, roll-out is gone (also by SIGKILL, which no handler can catch): the whole group gets TERM,
+before the command ends, roll-out is gone (also by SIGKILL, which no handler can catch): the whole group gets TERM,
 then KILL after GRACE seconds, so a test run the script started never keeps the machine-wide lock. Otherwise this
-process exits with the script's exit code.
+process exits with the command's exit code.
 
 Not part of the checks: it imports nothing from this package and runs as a plain script.
 """
@@ -33,12 +33,12 @@ def _stop_group(child: "subprocess.Popen", grace: float) -> None:
 
 
 def main(argv) -> int:
-    grace, script = float(argv[1]), argv[2]
+    grace, command = float(argv[1]), argv[2:]
     signal.signal(signal.SIGTERM, lambda *_a: None)  # a handler, not SIG_IGN: the script must not inherit an ignore
     try:
-        child = subprocess.Popen([script], stdin=subprocess.DEVNULL)  # output goes to roll-out's log
+        child = subprocess.Popen(command, stdin=subprocess.DEVNULL)  # output goes to roll-out's log
     except OSError as exc:
-        sys.stderr.write("cannot run %s: %s\n" % (script, exc.strerror))
+        sys.stderr.write("cannot run %s: %s\n" % (command[0], exc.strerror))
         return 127
 
     def watch() -> None:

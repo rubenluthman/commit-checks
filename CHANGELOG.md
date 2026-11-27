@@ -3,6 +3,7 @@
 ## [0.7.5] - Unreleased
 
 - A first commit or push from a linked worktree no longer fails with "release is not found" before the package is cached. The loader now cleans the git environment for every package-side call; repositories get the fix when their pin moves.
+- `roll-out` runs every consumer command (commits, `commit-checks verify`, `checks`) in its own watched process group, and a commit gets the verify's 4-hour limit. A commit past it is `CHECKS FAIL` and the run goes on, instead of ending with a traceback and leaving the hook running.
 
 ## [0.7.4] - 2026-11-27
 

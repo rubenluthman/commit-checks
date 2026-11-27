@@ -5,7 +5,7 @@ import os
 import signal
 import time
 
-from test_rollout import (RollOutBase, VERIFY_FAIL, VERIFY_OK, git, pid_alive, read, wait_until, write)
+from test_rollout import (HOOK_BG_HANG, RollOutBase, VERIFY_FAIL, VERIFY_OK, git, pid_alive, read, wait_until, write)
 
 # Hangs while .git/hang exists, with a background child as a real verify run has; otherwise passes at once.
 VERIFY_HANG_IF = ('#!/bin/sh\n[ -f .git/hang ] || exit 0\nsleep 300 &\necho $! > .git/bg-pid\necho $$ > .git/verify-pid\n'
@@ -349,3 +349,16 @@ class TestRecordFromADeadRun(RecoveryBase):
         self.assertIn("RESTORED       alpha", proc.stdout)
         self.assertIn("origin/ci/shared-pins exists; roll-out never deletes a remote branch", proc.stdout)
         self.assertEqual(git(root, "ls-remote", "origin", "refs/heads/ci/shared-pins").split()[0] != "", True)  # still there
+
+
+class TestSigkillDuringCommit(RecoveryBase):
+    CHECK = ""
+
+    def test_a_killed_roll_out_leaves_no_commit_hook_child(self):
+        root = self.make_consumer("alpha", hook=HOOK_BG_HANG)
+        proc = self.roll_started("v1.1.0", "--apply")
+        pid = self.bg_pid(root)
+        self.addCleanup(lambda: pid_alive(pid) and os.kill(pid, signal.SIGKILL))
+        proc.kill()
+        proc.communicate()
+        wait_until(self, lambda: not pid_alive(pid), "the hook's background child to be gone")
