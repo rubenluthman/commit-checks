@@ -4,6 +4,7 @@
 
 - `roll-out` commits under a fixed 15-minute limit that also counts the consumer's commit hook waiting for the machine-wide heavy-job lock. A consumer whose hook runs its full test suite then times out when another heavy job holds the lock, and the timed-out commit leaves its hook and the queued test run behind, still waiting for the lock. Give the commit the verify's limit (or exclude lock waits), and run the commit, the quick checks (`commit-checks verify`, `checks` commands) and the verify in their own process group, ended as a whole on a timeout.
 - The loader (`templates/loader.py`, copied into each repository as `scripts/commit-checks`) runs `resolve()`, `export()` and the source `git clone` without `clean=True`, so inside a hook they inherit `GIT_DIR`. A commit or push from a worktree before the pinned package is cached then fails. Pass `clean=True` to those three calls; repositories pick the fix up when their pin moves.
+- Remove the `apple-app-support` and `apple-test-support` pin types (and their tests and README lines) once no listed repository loads them: both were merged into `apple-dev-support`. `pins --package apple-app-support --package apple-test-support` on the consumer list shows when that is. This is a code change, so open the next version first.
 
 ## Icebox
 
