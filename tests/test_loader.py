@@ -243,8 +243,8 @@ class VisibilityTests(Base):
 class HookRootTests(LoaderBase):
     """The loader runs inside real hooks, in a main checkout and in a linked worktree."""
 
-    def hooked(self, r):
-        self.adopt(r)
+    def hooked(self, r, source=None):
+        self.adopt(r, source=source)
         shutil.copytree(os.path.join(PKG, "templates", "githooks"), r.path(".githooks"))
         for name in os.listdir(r.path(".githooks")):
             os.chmod(os.path.join(r.path(".githooks"), name), 0o755)
@@ -252,10 +252,13 @@ class HookRootTests(LoaderBase):
         r.git("add", ".githooks")
         r.git("commit", "-q", "-m", "chore: start", env={"COMMIT_CHECKS_PATH": self.src, "CI": "1"})
 
-    def commit_in(self, path, rel):
+    def commit_in(self, path, rel, local=True):
         with open(os.path.join(path, rel), "w") as fh:
             fh.write("hello\n")
-        env = env_for(extra={"COMMIT_CHECKS_PATH": self.src, "CI": "1"})
+        extra = {"CI": "1"}
+        if local:
+            extra["COMMIT_CHECKS_PATH"] = self.src
+        env = env_for(extra=extra)
         run = lambda *a: subprocess.run(["git"] + list(a), cwd=path, capture_output=True, text=True, env=env)
         run("add", rel)
         return run("commit", "-q", "-m", "chore: add " + rel)
@@ -275,6 +278,46 @@ class HookRootTests(LoaderBase):
         proc = self.commit_in(wt, "b.txt")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertNotIn("cannot read version", proc.stdout + proc.stderr)
+
+    def worktree_without_cache(self, r):
+        wt = os.path.join(tempfile.mkdtemp(prefix="cc-wt-"), "wt")
+        self.addCleanup(shutil.rmtree, os.path.dirname(wt), True)
+        r.git("worktree", "add", "-q", "-b", "side", wt)
+        # The main-checkout commit filled the cache; a first run from a worktree must not need it.
+        common = r.git("rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+        shutil.rmtree(os.path.join(common, "commit-checks"))
+        return wt
+
+    def test_a_first_commit_in_a_linked_worktree_loads_the_package_from_the_local_folder(self):
+        r = self.repo()
+        self.hooked(r)
+        wt = self.worktree_without_cache(r)
+        proc = self.commit_in(wt, "b.txt")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_a_first_commit_in_a_linked_worktree_loads_the_package_from_the_source(self):
+        r = self.repo()
+        self.hooked(r, source=self.src)
+        wt = self.worktree_without_cache(r)
+        proc = self.commit_in(wt, "b.txt", local=False)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_a_first_push_from_a_linked_worktree_loads_the_package(self):
+        r = self.repo()
+        self.hooked(r)
+        remote = tempfile.mkdtemp(prefix="cc-remote-")
+        self.addCleanup(shutil.rmtree, remote, True)
+        subprocess.run(["git", "init", "-q", "--bare", remote], check=True, env=env_for())
+        r.git("remote", "add", "origin", remote)
+        wt = os.path.join(tempfile.mkdtemp(prefix="cc-wt-"), "wt")
+        self.addCleanup(shutil.rmtree, os.path.dirname(wt), True)
+        r.git("worktree", "add", "-q", "-b", "side", wt)
+        self.assertEqual(self.commit_in(wt, "b.txt").returncode, 0)
+        common = r.git("rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+        shutil.rmtree(os.path.join(common, "commit-checks"))
+        env = env_for(extra={"CI": "1", "COMMIT_CHECKS_PATH": self.src})
+        proc = subprocess.run(["git", "push", "-q", "origin", "side"], cwd=wt, capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_a_loader_outside_root_scripts_fails(self):
         r = self.repo()

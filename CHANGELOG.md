@@ -2,6 +2,8 @@
 
 ## [0.7.5] - Unreleased
 
+- A first commit or push from a linked worktree no longer fails with "release is not found" before the package is cached. The loader now cleans the git environment for every package-side call; repositories get the fix when their pin moves.
+
 ## [0.7.4] - 2026-11-27
 
 - `pins` and `roll-out` read and move `apple-dev-support`, the merged Apple app and test helpers. `apple-app-support` and `apple-test-support` stay until no repository loads them.
