@@ -2,6 +2,8 @@
 
 ## [0.7.4] - Unreleased
 
+- `pins` and `roll-out` read and move `apple-dev-support`, the merged Apple app and test helpers. `apple-app-support` and `apple-test-support` stay until no repository loads them.
+
 ## [0.7.3] - 2026-11-27
 
 - `roll-out` takes `--only NAME` and `--pin NAME=latest`, and runs the consumer's `commit-checks verify` first: a request for a version bump is `WAITS` (edits undone, not a failure). The full `verify_commit.sh` runs only for library pins or a changed loader, or a list entry's `checks` command runs in its place.

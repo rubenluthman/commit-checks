@@ -27,7 +27,7 @@ NOT_NAMES = {"func", "var", "let", "init", "subscript", "where", "case"}
 # inputs, for one). They count only when called on something named like defaults: `defaults`, `UserDefaults.standard`.
 KVC_METHODS = {"setValue", "value"}
 STORAGE_WRAPPERS = {"AppStorage", "SceneStorage"}
-# Types that store a value in UserDefaults under the key their initializer takes as `key:` (apple-app-support).
+# Types that store a value in UserDefaults under the key their initializer takes as `key:` (apple-dev-support).
 KEYED_STORES = {"FolderBookmark"}
 IGNORED_CONTAINERS = {"CodingKeys"}
 

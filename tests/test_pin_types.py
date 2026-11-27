@@ -8,7 +8,7 @@ import sys
 from support import env_for
 from test_rollout import RollOutBase, git, read, write
 
-SWIFT_NAMES = ("markdown-engine", "apple-app-support", "apple-test-support")
+SWIFT_NAMES = ("markdown-engine", "apple-dev-support", "apple-app-support", "apple-test-support")
 MANIFEST = ('// swift-tools-version: 6.0\nimport PackageDescription\nlet package = Package(\n  name: "App",\n  dependencies: [\n'
             '    // pinned\n    .package(url: "https://github.com/%(owner)s/%(name)s%(git)s", %(req)s),\n'
             '    .package(url: "https://github.com/acme/other.git", exact: "1.0.0")\n  ]\n)\n')

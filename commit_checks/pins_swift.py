@@ -1,4 +1,4 @@
-"""Swift package pins shared by every package that loads as a Swift dependency: Judarn, markdown-engine, apple-app-support, apple-test-support.
+"""Swift package pins shared by every package that loads as a Swift dependency: Judarn, markdown-engine, apple-dev-support, and its earlier parts apple-app-support and apple-test-support.
 
 `forms_for(name, label)` builds the readers and editors for one package, matched by the last part of its repository URL.
 The editors move only an exact version: `exact:` (or `.exact(`) in the root `Package.swift`, a one-patch range or `exactVersion`
@@ -755,4 +755,4 @@ class CombinedPin(Pin):
         return all(p.committed(root, revision) for p in self.parts if p.status == "update")
 
 
-SWIFT_PIN_TYPES = [SwiftPackagePin(n) for n in ("markdown-engine", "apple-app-support", "apple-test-support")]
+SWIFT_PIN_TYPES = [SwiftPackagePin(n) for n in ("markdown-engine", "apple-dev-support", "apple-app-support", "apple-test-support")]
