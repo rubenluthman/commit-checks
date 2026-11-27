@@ -1,1 +1,21 @@
-{"visibility": "public", "self": true}
+{
+  "visibility": "public",
+  "self": true,
+  "release": {
+    "source": {
+      "type": "regex",
+      "path": "commit_checks/__init__.py",
+      "pattern": "__version__ = \"(\\d+\\.\\d+\\.\\d+)\""
+    },
+    "changelog": "CHANGELOG.md",
+    "code": [
+      "commit_checks/*",
+      "templates/*"
+    ]
+  },
+  "docs_only": {
+    "paths": [
+      "*.md"
+    ]
+  }
+}
