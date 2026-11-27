@@ -1,11 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [0.7.3] - 2026-11-27
 
 - `roll-out` takes `--only NAME` and `--pin NAME=latest`, and runs the consumer's `commit-checks verify` first: a request for a version bump is `WAITS` (edits undone, not a failure). The full `verify_commit.sh` runs only for library pins or a changed loader, or a list entry's `checks` command runs in its place.
 - A `roll-out` run may include several gated packages; a gate holds a consumer's move of its own package only.
-- New pin types: `markdown-engine`, `apple-app-support` and `apple-test-support` (Swift packages, shared readers and editors with `judarn`) and `ai-output-evals` (`EVALS_TAG` and `EVALS_COMMIT` in a file named by the list entry's `files`). `pins` reads them.
-- List keys: `library` (a Swift version range is `RANGE`, exit 0, not `MANUAL`), `files`, and `scanSkip` (folders the unlisted-repository scan never enters). `checks`, `files`, `library` and `scanSkip` are validated; a bad value exits 2.
+- `pins` and `roll-out` read and move `markdown-engine`, `apple-app-support`, `apple-test-support` (Swift, sharing Judarn's readers) and `ai-output-evals` (a shell pin in the file a list entry's `files` names). List keys `library` (a Swift range is `RANGE`, not `MANUAL`) and `scanSkip` (folders the scan never enters) are new, and every list key is validated.
 
 ## [0.7.2] - 2026-11-26
 
