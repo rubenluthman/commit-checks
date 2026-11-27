@@ -2,6 +2,8 @@
 
 ## Active
 
+- The loader (`templates/loader.py`, copied into each repository as `scripts/commit-checks`) runs `resolve()`, `export()` and the source `git clone` without `clean=True`, so inside a hook they inherit `GIT_DIR`. A commit or push from a worktree before the pinned package is cached then fails. Pass `clean=True` to those three calls; repositories pick the fix up when their pin moves.
+
 ## Icebox
 
 - Let the Judarn editor rewrite `Package.resolved` version 1 and the workspace copies of `Package.resolved` (`X.xcworkspace/...`). Both are read today, and roll-out blocks or notes them instead of editing.
