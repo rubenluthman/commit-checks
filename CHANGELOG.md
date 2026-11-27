@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.7.4] - Unreleased
+## [0.7.4] - 2026-11-27
 
 - `pins` and `roll-out` read and move `apple-dev-support`, the merged Apple app and test helpers. `apple-app-support` and `apple-test-support` stay until no repository loads them.
 
