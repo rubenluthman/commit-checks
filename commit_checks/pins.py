@@ -113,12 +113,13 @@ class PinType:
         """The commit subject for moving this pin to `tag`."""
         raise NotImplementedError
 
-    def read(self, root: str) -> Reading:
-        """Every form in which `root` pins this package. Edits nothing, reads only what Git tracks."""
+    def read(self, root: str, entry: Optional[dict] = None) -> Reading:
+        """Every form in which `root` pins this package. Edits nothing, reads only what Git tracks.
+        `entry` is the repository's list entry (its `files` and `library` keys), when there is one."""
         raise NotImplementedError
 
-    def detect(self, root: str) -> bool:
-        return bool(self.read(root).forms)
+    def detect(self, root: str, entry: Optional[dict] = None) -> bool:
+        return bool(self.read(root, entry).forms)
 
     def resolve_target(self, tag: str) -> Target:
         """Return the verified release, or raise CheckError (the command then edits nothing)."""
@@ -132,7 +133,7 @@ class PinType:
         """The newest release in the local clone, verified on its origin like an explicit tag."""
         return self.resolve_target(latest_tag(self.clone()))
 
-    def inspect(self, root: str, target: Target) -> Pin:
+    def inspect(self, root: str, target: Target, entry: Optional[dict] = None) -> Pin:
         raise NotImplementedError
 
 
@@ -201,7 +202,7 @@ class CommitChecksPin(PinType):
     name = "commit-checks"
     SETTINGS = ".commit-checks.json"
 
-    def read(self, root: str) -> Reading:
+    def read(self, root: str, entry: Optional[dict] = None) -> Reading:
         path = os.path.join(root, self.SETTINGS)
         if not os.path.isfile(path):
             return Reading()
@@ -232,7 +233,7 @@ class CommitChecksPin(PinType):
         repo = self.package_repo()
         return Target(self.name, tag, _verified_tag(repo, tag), repo)
 
-    def inspect(self, root: str, target: Target) -> Pin:
+    def inspect(self, root: str, target: Target, entry: Optional[dict] = None) -> Pin:
         settings_path = os.path.join(root, self.SETTINGS)
         data = _read_json(settings_path)
         if not isinstance(data, dict) or not isinstance(data.get("version"), str) or not isinstance(data.get("commit"), str):
@@ -287,7 +288,7 @@ class HouseStylePin(PinType):
         with open(path, encoding="utf-8", errors="replace", newline="") as fh:
             return fh.read()
 
-    def read(self, root: str) -> Reading:
+    def read(self, root: str, entry: Optional[dict] = None) -> Reading:
         text = self._text(root)
         found = HOUSE_LINE.search(text) if text is not None else None
         if not found:
@@ -302,7 +303,7 @@ class HouseStylePin(PinType):
         repo = self.clone()
         return Target(self.name, tag, _verified_tag(repo, tag), repo)
 
-    def inspect(self, root: str, target: Target) -> Pin:
+    def inspect(self, root: str, target: Target, entry: Optional[dict] = None) -> Pin:
         text = self._text(root)
         found = list(HOUSE_LINE.finditer(text or ""))
         if len(found) != 1:
@@ -319,6 +320,8 @@ class HouseStylePin(PinType):
 PIN_TYPES: Dict[str, PinType] = {p.name: p for p in (CommitChecksPin(), HouseStylePin())}
 
 
-from .pins_judarn import JUDARN_PIN_TYPES  # noqa: E402  (the module imports this one)
+from .pins_judarn import JUDARN_PIN_TYPES  # noqa: E402  (the modules import this one)
+from .pins_shell import SHELL_PIN_TYPES  # noqa: E402
+from .pins_swift import SWIFT_PIN_TYPES  # noqa: E402
 
-PIN_TYPES.update({p.name: p for p in JUDARN_PIN_TYPES})
+PIN_TYPES.update({p.name: p for p in JUDARN_PIN_TYPES + SWIFT_PIN_TYPES + SHELL_PIN_TYPES})

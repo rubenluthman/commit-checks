@@ -28,7 +28,7 @@ from . import pinreport
 from .consumerlist import Consumers, load_list, not_found_text, not_listed_text
 from .pins import LOADER_FILE, PIN_TYPES, Pin, PinType, Target
 
-OK = {"updated", "would update", "current", "local", "waits"}
+OK = {"updated", "would update", "current", "local", "range", "waits"}
 COMMIT_TIMEOUT = 900  # the consumer's own hooks run during the commit
 VERIFY_TIMEOUT = 4 * 3600  # a consumer's own verification script, which may wait for the machine-wide lock
 VERIFY_TIMEOUT_ENV = "COMMIT_CHECKS_ROLL_OUT_VERIFY_TIMEOUT"  # seconds; a test seam
@@ -252,17 +252,17 @@ def process(entry: dict, pins: List[Tuple[PinType, Target]], run: Run, held: Opt
     try:
         if os.path.realpath(gitutil.toplevel(root)) != os.path.realpath(root):
             return Result(name, "blocked", "not the root of a git repository")
-        problems = [not_found_text(p.name) for p, _t in pins if not p.detect(root)] + undeclared(root, others or [])
+        problems = [not_found_text(p.name) for p, _t in pins if not p.detect(root, entry)] + undeclared(root, others or [])
         if problems:
             return Result(name, "blocked", "; ".join(problems))
-        planned: List[Planned] = [(ptype, target, ptype.inspect(root, target)) for ptype, target in pins]
+        planned: List[Planned] = [(ptype, target, ptype.inspect(root, target, entry)) for ptype, target in pins]
         notes = [n for _t, _g, pin in planned for n in pin.notes]
         for ptype, _t in pins:  # the reader's problems, under every status; a note that already says one is not repeated
-            for text in ptype.read(root).problems:
+            for text in ptype.read(root, entry).problems:
                 if not any(n.startswith(text) for n in notes):
                     notes.append(pinreport.problem_note(text))
         for _t, _g, pin in planned:
-            if pin.status not in ("blocked", "current", "local", "manual", "update"):
+            if pin.status not in ("blocked", "current", "local", "manual", "range", "update"):
                 raise CheckError("pin type returned an unknown status")
         updates = [x for x in planned if x[2].status in ("update", "blocked")]
         if not updates:
@@ -270,6 +270,8 @@ def process(entry: dict, pins: List[Tuple[PinType, Target]], run: Run, held: Opt
                 return Result(name, "manual", "not an exact pin, not edited", notes)
             if any(x[2].status == "local" for x in planned):
                 return Result(name, "local", "local-path reference, not edited", notes)
+            if any(x[2].status == "range" for x in planned):
+                return Result(name, "range", "version range in a library, nothing to move", notes)
             return Result(name, "current", ", ".join("%s %s" % (t.name, pin.current) for t, _g, pin in planned), notes)
         if _git(root, "status", "--porcelain").stdout.strip():
             return Result(name, "skipped", "has uncommitted changes", notes)

@@ -19,7 +19,8 @@ USAGE = """usage: commit-checks MODE
   history               scan the whole history (every commit, message, author and tag), as for a repository about to go public
   roll-out --list FILE --pin NAME=vX.Y.Z|latest ... [--only NAME ...] [--apply] [--push] [--log-dir DIR] [--approve NAME ...]
                         move every listed consumer to release tags of the shared packages
-                        (commit-checks, house-style, judarn); dry run unless --apply
+                        (commit-checks, house-style, judarn, markdown-engine, apple-app-support,
+                        apple-test-support, ai-output-evals); dry run unless --apply
   pins --list FILE --package NAME ... [--json]
                         read which release of each package every listed consumer pins
                         (read-only: no tag, no network, no edits)

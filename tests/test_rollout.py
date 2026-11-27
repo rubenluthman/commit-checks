@@ -167,7 +167,7 @@ class RollOutBase(Base):
 
     def write_list(self, extra=None, consumers=None):
         data = {"consumers": [dict({"name": c["name"], "path": os.path.relpath(c["path"], self.tmp), "packages": c["packages"]},
-                                   **({"checks": c["checks"]} if c.get("checks") else {}))
+                                   **{k: c[k] for k in ("checks", "files", "library") if c.get(k)})
                               for c in (self.consumers if consumers is None else consumers)]}
         data.update(extra or {})
         path = os.path.join(self.tmp, "list.json")

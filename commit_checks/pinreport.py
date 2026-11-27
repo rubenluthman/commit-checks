@@ -22,7 +22,7 @@ def consumer_report(entry: dict, ptypes: List[PinType]) -> dict:
     packages = {}
     for ptype in ptypes:
         declared = ptype.name in entry["packages"]
-        reading = ptype.read(entry["path"]) if exists else Reading()
+        reading = ptype.read(entry["path"], entry) if exists else Reading()
         detected = bool(reading.forms)
         problems = list(reading.problems)
         if declared and not exists:
@@ -37,17 +37,21 @@ def consumer_report(entry: dict, ptypes: List[PinType]) -> dict:
 
 
 def find_unlisted(consumers: Consumers, ptypes: List[PinType]) -> List[Tuple[str, List[str]]]:
-    """Repositories under scanRoot (two folder levels deep) that load a package but are not listed: (absolute path, packages)."""
+    """Repositories under scanRoot (two folder levels deep) that load a package but are not listed: (absolute path, packages).
+    Folders named in `scanSkip` are never entered. A package pinned in a file named by a list entry's `files` key is found only
+    in listed repositories: the scan cannot know the file."""
     if not consumers.scan_root:
         return []
     if not os.path.isdir(consumers.scan_root):
         raise CheckError("scanRoot is not a folder")
     listed = {os.path.realpath(e["path"]) for e in consumers.entries}
+    skipped = {os.path.realpath(s) for s in consumers.scan_skip}
     found = []
 
     def subdirs(path: str) -> List[str]:
         return [os.path.join(path, n) for n in sorted(os.listdir(path))
-                if not n.startswith(".") and n != "node_modules" and os.path.isdir(os.path.join(path, n))]
+                if not n.startswith(".") and n != "node_modules" and os.path.isdir(os.path.join(path, n))
+                and os.path.realpath(os.path.join(path, n)) not in skipped]
 
     for first in subdirs(consumers.scan_root):
         for cand in [first] + subdirs(first):
